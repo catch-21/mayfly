@@ -1,0 +1,24 @@
+[package]
+name = "pubky-mayfly"
+description = "Mayfly core: records, verifier fold, rounds and votes, witness quorum. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pubky-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+base32.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[features]
+default = []
+# Deterministic N-party simulator used by the property tests and by client integration tests.
+sim = []
