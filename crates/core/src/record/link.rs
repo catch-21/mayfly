@@ -11,7 +11,8 @@ use crate::hash::{ChainId, Hash};
 pub struct Link {
     /// Protocol version.
     pub v: u32,
-    /// The chain this link belongs to.
+    /// The chain this link belongs to. Empty on genesis, whose bytes define the id (§6.5).
+    #[serde(default, skip_serializing_if = "ChainId::is_empty")]
     pub chain: ChainId,
     /// Sequence number; genesis is 0.
     pub seq: u64,

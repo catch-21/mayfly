@@ -68,9 +68,19 @@ impl ChainFolder {
         format!("{}links/{}-{}.jws", self.0, seq8(seq), hash.h16())
     }
 
-    /// `confirms/<seq>-<h16>.jws`, named by the *referenced link's* hash.
+    /// `confirms/<seq>-<h16>.jws`: my own confirmation, named by the *referenced link's* hash.
     pub fn confirm(&self, seq: u64, link: &Hash) -> String {
         format!("{}confirms/{}-{}.jws", self.0, seq8(seq), link.h16())
+    }
+
+    /// `confirms/<seq>-<h16>-<kid>.jws`: a mirrored confirmation by another party (§7).
+    pub fn mirrored_confirm(&self, seq: u64, link: &Hash, confirmer_kid: &str) -> String {
+        format!(
+            "{}confirms/{}-{}-{confirmer_kid}.jws",
+            self.0,
+            seq8(seq),
+            link.h16()
+        )
     }
 
     /// `rejects/<seq>-r<round>.jws`.

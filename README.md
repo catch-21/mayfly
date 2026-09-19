@@ -14,7 +14,8 @@ tests before any transport code.
 ```
 crates/
   core/     pubky-mayfly          records, fold (verifier), rounds and votes, Grant checks,
-                                     witness quorum, Rules trait. WASM-safe, no I/O.
+                                     witness quorum, Rules trait, N-party simulator and the
+                                     tally/1 test rules. WASM-safe, no I/O.
   rules/    pubky-mayfly-rules    list/1, later chess/1 and document/1
   client/   pubky-mayfly-client   storage layout, propose/confirm/reject/mirror, SSE sync
 docs/

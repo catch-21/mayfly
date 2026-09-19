@@ -107,7 +107,10 @@ impl<'de> Deserialize<'de> for Hash {
 }
 
 /// `chain_id = crockford_base32(BLAKE3(genesis bytes)[0..16])`, 26 characters (§6.5).
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// The genesis link cannot carry its own id (the id is derived from its bytes), so its `chain`
+/// is the empty id; every later record carries the derived one.
+#[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ChainId(String);
 
@@ -119,6 +122,16 @@ impl ChainId {
             base32::Alphabet::Crockford,
             &h.as_bytes()[..16],
         ))
+    }
+
+    /// The empty id a genesis link carries.
+    pub fn none() -> Self {
+        Self(String::new())
+    }
+
+    /// True for the genesis placeholder.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     /// The 26 Crockford characters.

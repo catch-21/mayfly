@@ -348,7 +348,8 @@ before parsing.
 - `confirms` embeds the full confirmation JWSs that committed `prev` (the quorum certificate,
   QC). All of them carry the same `round` as link `prev`; the array is sorted by confirmer `kid`
   (lexicographic byte order of the z-base-32 string) so that two parties embedding the same QC
-  produce identical bytes. Genesis has `prev = ""` and `confirms = []`.
+  produce identical bytes. Genesis has `prev = ""`, `confirms = []` and no `chain`: its id is
+  derived from its own bytes (§6.5), so it cannot carry it.
 - `receipts` embeds, for each engaged witness whose receipt the author **holds**, its receipt
   for the **QC-completing confirmation**: the member of `confirms` with the greatest
   `observed_at` in that witness's receipts, ties broken by lower `kid`. That is the moment
@@ -584,6 +585,14 @@ never be replayed across chains.
 
 Only the initiator's `kid` (and Grant, in the link's `grant` field) is known at genesis; the
 others arrive in their confirmations. Roles are rules-defined strings.
+
+**A genesis confirmation is key discovery as well as a vote.** Under `q < N` genesis may commit
+before every party has confirmed; a party whose confirmation arrives afterwards is no longer
+voting, but their confirmation is still the only place their `kid`, `client_id` and `path`
+appear (§5.3), so an honest client publishes it anyway, and a verifier **seats a party from any
+valid genesis confirmation it finds**, inside the genesis QC or not. Such a confirmation is not
+a late-vote anomaly. Because link 1 may already exist without it, every party mirrors it as
+they mirror a QC (§7); until then it lives only in the confirmer's own folder.
 
 **A genesis confirmation is consent to the fault model, not just to the membership.** The
 initiator writes the genesis body alone, and several of its fields decide what the chain can
@@ -827,7 +836,8 @@ Per party, under their app folder:
   chains/<chain_id>/
     links/00000000-<h16>.jws                  genesis
     links/00000007-<h16>.jws                  my proposals and mirrored committed links
-    confirms/00000007-<h16>.jws               my confirmation of link 7, and mirrored QCs
+    confirms/00000007-<h16>.jws               my confirmation of link 7
+    confirms/00000007-<h16>-<kid>.jws         mirrored confirmation of link 7 by <kid> (QCs, late genesis confirmations)
     rejects/00000007-r1.jws                   my reject or pass in round 1 of seq 7 (rare)
     receipts/<witness kid>/engage.jws         mirrored engagement, so a receipts listing is self-describing
     receipts/<witness kid>/00000007-<h16>.jws mirrored watchdog receipts, one folder per engagement key (§11.4)
@@ -858,7 +868,11 @@ Rules:
   form its QC, and every watchdog receipt for it — so the full chain *and its timeline* are
   readable from any one party's homeserver and each party holds evidence against later edits by
   the other parties or by the watchdog. Mirroring the QC matters most at the head, which has no
-  successor to embed it yet.
+  successor to embed it yet. Under `q < N` a genesis confirmation that arrives after genesis
+  committed is mirrored the same way: it is the only evidence of that party's seat (§6.6).
+  A mirrored confirmation is written under its own name suffixed with the confirmer's `kid`
+  (`confirms/00000007-<h16>-<kid>.jws`), so it never collides with the mirroring party's own
+  confirmation of the same link.
 - Files are never modified after being written. A changed hash is evidence of tampering by
   whoever controls that storage. The homeserver has no `If-Match`, so a `PUT` always overwrites;
   this is harmless because a filename embeds the content hash and two writers of the same name

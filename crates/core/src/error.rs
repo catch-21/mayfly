@@ -58,6 +58,10 @@ pub enum Error {
     #[error("rules: {0}")]
     Rules(String),
 
+    /// The inputs hold no usable genesis, or more than one and no `chain` was named.
+    #[error("no chain: {0}")]
+    NoChain(String),
+
     /// Not yet implemented in this skeleton.
     #[error("not implemented: {0}")]
     Unimplemented(&'static str),

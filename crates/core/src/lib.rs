@@ -18,7 +18,7 @@
 //! | `close`     | §6.8     | Close states                                                    |
 //! | `witness`   | §11      | Engagements, witness quorum, stopwatch                          |
 //! | `fold`      | §9.2     | The verifier                                                    |
-//! | `sim`       | §16.2    | N-party simulator for property tests (feature `sim`)            |
+//! | `sim`       | §16.2    | N-party simulator and `tally/1` test rules for property tests   |
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -32,11 +32,9 @@ pub mod hash;
 pub mod keys;
 pub mod record;
 pub mod rules;
+pub mod sim;
 pub mod vote;
 pub mod witness;
-
-#[cfg(any(feature = "sim", test))]
-pub mod sim;
 
 pub use error::Error;
 pub use hash::{ChainId, Hash};

@@ -17,8 +17,3 @@ base32.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-
-[features]
-default = []
-# Deterministic N-party simulator used by the property tests and by client integration tests.
-sim = []
