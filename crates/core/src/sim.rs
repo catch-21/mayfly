@@ -29,8 +29,8 @@ use crate::fold::Inputs;
 use crate::genesis::{self, Genesis};
 use crate::hash::{ChainId, Hash};
 use crate::record::{
-    sign, CloseBody, CloseReason, Confirmation, Engagement, Link, Policy, Receipt, Reject, Service,
-    Signed, Source,
+    sign, CloseBody, CloseReason, Confirmation, Engagement, Link, Policy, Receipt, Reject,
+    Revocation, Service, Signed, Source,
 };
 use crate::rules::{state_hash, Nonce, Outcome, PartyIndex, Rules, RulesError, Status};
 use crate::vote::{designated, effective_quorum, RoundVotes, Vote};
@@ -66,6 +66,9 @@ pub struct TallyState {
     pub archived: bool,
     /// Number of parties.
     pub parties: usize,
+    /// `RandomTally` only: `BLAKE3(nonces)` drawn from the reveals (§6.6); empty for `Tally`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seed: String,
 }
 
 /// `tally/1` body.
@@ -159,6 +162,76 @@ impl Rules for Tally {
     }
 }
 
+/// `tally/1` with commit–reveal seat randomisation (§6.6): `init` waits for every party's
+/// nonce and folds them into `seed`, so the state hash depends on the reveals.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RandomTally;
+
+impl Rules for RandomTally {
+    type State = TallyState;
+    type Body = TallyBody;
+
+    fn id(&self) -> &'static str {
+        "random-tally/1"
+    }
+
+    fn reference_hash(&self) -> &'static str {
+        "random-tally/1-reference-hash"
+    }
+
+    fn init(
+        &self,
+        genesis: &Genesis,
+        _confirmations: &[Confirmation],
+        nonces: &[Nonce],
+    ) -> Result<TallyState, RulesError> {
+        if nonces.len() != genesis.parties.len() {
+            return Err(RulesError(format!(
+                "{} nonces for {} parties",
+                nonces.len(),
+                genesis.parties.len()
+            )));
+        }
+        let mut all = Vec::new();
+        for n in nonces {
+            all.extend_from_slice(n);
+        }
+        Ok(TallyState {
+            parties: genesis.parties.len(),
+            seed: Hash::of(&all).to_base64url(),
+            ..TallyState::default()
+        })
+    }
+
+    fn wants_reveals(&self, _genesis: &Genesis) -> bool {
+        true
+    }
+
+    fn obliged(&self, state: &TallyState) -> Vec<PartyIndex> {
+        Tally.obliged(state)
+    }
+
+    fn may_append(&self, state: &TallyState, party: PartyIndex, kind: &str) -> bool {
+        Tally.may_append(state, party, kind)
+    }
+
+    fn apply(&self, state: &TallyState, link: &Link) -> Result<TallyState, RulesError> {
+        Tally.apply(state, link)
+    }
+
+    fn status(&self, state: &TallyState) -> Status {
+        Tally.status(state)
+    }
+
+    fn close(&self, state: &TallyState, close: &CloseBody) -> Result<Outcome, RulesError> {
+        Tally.close(state, close)
+    }
+
+    fn canonical_state(&self, state: &TallyState) -> Vec<u8> {
+        Tally.canonical_state(state)
+    }
+}
+
 // ─── Actors ───────────────────────────────────────────────────────────────────────────────────
 
 /// One simulated party.
@@ -176,6 +249,8 @@ pub struct Party {
     pub path: String,
     /// Honest or not.
     pub behaviour: Behaviour,
+    /// The nonce this party commits to at genesis and reveals later (§6.6).
+    pub nonce: [u8; 16],
 }
 
 impl Party {
@@ -334,6 +409,10 @@ struct Proposal<S> {
     author: PartyIndex,
     next_state: Option<S>,
     key_change: Option<KeyChange>,
+    /// `reveal`: the nonce.
+    reveal: Option<Vec<u8>>,
+    /// `witnesses`: witness indices to seat and unseat on commit.
+    witness_change: Option<(Vec<usize>, Vec<usize>)>,
 }
 
 /// The open seq: rounds, proposals and votes, as an honest client tracks them.
@@ -409,6 +488,11 @@ pub struct Sim<R: Rules> {
     pub open: Open<R::State>,
     /// Every skip made: `(seq, round, skipper)`.
     pub skip_log: Vec<(u64, u32, PartyIndex)>,
+    /// Witness indices currently engaged: genesis witnesses, then as `witnesses` links change
+    /// it.
+    pub engaged: BTreeSet<usize>,
+    /// Nonces revealed so far, by party.
+    pub revealed: BTreeMap<PartyIndex, Vec<u8>>,
     genesis: Option<Genesis>,
     genesis_bytes: Option<Vec<u8>>,
     /// Per witness: `record hash → (observed_at, receipt bytes)`.
@@ -462,26 +546,11 @@ impl<R: Rules> Sim<R> {
                     path: format!("/pub/{client_id}/{PROTOCOL_FOLDER}/"),
                     client_id,
                     behaviour: Behaviour::Honest,
+                    nonce: pubky_common::crypto::random_bytes::<16>(),
                 }
             })
             .collect();
-        let witnesses = (0..k)
-            .map(|_| {
-                let identity = Keypair::random();
-                let client = Keypair::random();
-                let client_id = "watchdog.example".to_string();
-                let grant = mint_grant(&identity, &client, &client_id, now_s);
-                Witness {
-                    identity,
-                    client,
-                    grant,
-                    path: format!("/pub/{client_id}/{PROTOCOL_FOLDER}/"),
-                    client_id,
-                    engagement: None,
-                    behaviour: WitnessBehaviour::Honest,
-                }
-            })
-            .collect();
+        let witnesses = (0..k).map(|_| Self::new_witness(now_s)).collect();
         Self {
             rules,
             chain: None,
@@ -493,11 +562,61 @@ impl<R: Rules> Sim<R> {
             committed: Vec::new(),
             open: Open::new(0),
             skip_log: Vec::new(),
+            engaged: (0..k).collect(),
+            revealed: BTreeMap::new(),
             genesis: None,
             genesis_bytes: None,
             receipted: vec![BTreeMap::new(); k],
             cursor: 0,
         }
+    }
+
+    fn new_witness(now_s: u64) -> Witness {
+        let identity = Keypair::random();
+        let client = Keypair::random();
+        let client_id = "watchdog.example".to_string();
+        let grant = mint_grant(&identity, &client, &client_id, now_s);
+        Witness {
+            identity,
+            client,
+            grant,
+            path: format!("/pub/{client_id}/{PROTOCOL_FOLDER}/"),
+            client_id,
+            engagement: None,
+            behaviour: WitnessBehaviour::Honest,
+        }
+    }
+
+    /// Before genesis: re-mint party `p`'s Grant with a lifetime of `lifetime_secs`, so a test
+    /// can walk past its `exp` (§9.2 step 4).
+    pub fn reissue_grant(&mut self, p: PartyIndex, lifetime_secs: u64) {
+        let party = &self.parties[p];
+        let now_s = self.now_ms / 1000;
+        let claims = GrantClaims {
+            iss: party.identity.public_key(),
+            client_id: ClientId::new(&party.client_id).expect("client id"),
+            caps: vec![Capability::read_write(format!("/pub/{}/", party.client_id)).expect("cap")],
+            cnf: party.client.public_key(),
+            jti: GrantId::generate(),
+            iat: now_s,
+            exp: now_s + lifetime_secs,
+        };
+        let signed = claims.sign(&self.parties[p].identity, GRANT_JWS_TYP);
+        self.parties[p].grant = signed;
+    }
+
+    /// A new witness, not named at genesis, with keys and — once the chain exists — an
+    /// `engage.jws`. Returns its index; seat it with [`Sim::propose_witnesses`].
+    pub fn add_witness(&mut self, behaviour: WitnessBehaviour) -> Result<usize, SimError> {
+        let mut w = Self::new_witness(self.now_ms / 1000);
+        w.behaviour = behaviour;
+        self.witnesses.push(w);
+        self.receipted.push(BTreeMap::new());
+        let i = self.witnesses.len() - 1;
+        if self.chain.is_some() {
+            self.engage_witness(i)?;
+        }
+        Ok(i)
     }
 
     // ── Read-side helpers ───────────────────────────────────────────────────────────────────
@@ -637,6 +756,8 @@ impl<R: Rules> Sim<R> {
                 author: 0,
                 next_state: None,
                 key_change: None,
+                reveal: None,
+                witness_change: None,
             },
         );
         Ok(hash)
@@ -673,7 +794,11 @@ impl<R: Rules> Sim<R> {
             state,
             grant: Some(party.grant.clone()),
             path: Some(party.path.clone()),
-            commit: None,
+            commit: self
+                .genesis
+                .as_ref()
+                .filter(|g| self.rules.wants_reveals(g))
+                .map(|_| Hash::of(&party.nonce).to_base64url()),
         };
         if self.committed.is_empty() {
             self.write_confirmation(p, hash, &c)?;
@@ -709,33 +834,40 @@ impl<R: Rules> Sim<R> {
 
     /// Every witness named at genesis publishes its `engage.jws`.
     pub fn engage_witnesses(&mut self) -> Result<(), SimError> {
+        for i in 0..self.witnesses.len() {
+            if self.witnesses[i].engagement.is_none() {
+                self.engage_witness(i)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn engage_witness(&mut self, i: usize) -> Result<(), SimError> {
         let chain = self.chain_id().clone();
         let parties: Vec<String> = self.parties.iter().map(Party::pubky).collect();
-        for i in 0..self.witnesses.len() {
-            let w = &self.witnesses[i];
-            let e = Engagement {
-                v: PROTOCOL_VERSION,
-                kind: "engage".into(),
-                chain: chain.clone(),
-                kid: w.kid(),
-                grant: w.grant.clone(),
-                path: w.path.clone(),
-                parties: parties.clone(),
-                until: self.now_ms / 1000 + 365 * 24 * 3600,
-                policy: Policy {
-                    poll_ms: 1000,
-                    clock: "sim".into(),
-                },
-                service: Service::Receipts,
-                payment: None,
-            };
-            let bytes = sign(&w.client, typ::WITNESS, &e).map_err(|e| SimError(e.to_string()))?;
-            let text = String::from_utf8(bytes.clone()).expect("jws is ascii");
-            let folder = w.folder();
-            let file = format!("witness/{chain}/engage.jws");
-            self.storage.put(&folder, &file, bytes);
-            self.witnesses[i].engagement = Some(text);
-        }
+        let w = &self.witnesses[i];
+        let e = Engagement {
+            v: PROTOCOL_VERSION,
+            kind: "engage".into(),
+            chain: chain.clone(),
+            kid: w.kid(),
+            grant: w.grant.clone(),
+            path: w.path.clone(),
+            parties,
+            until: self.now_ms / 1000 + 365 * 24 * 3600,
+            policy: Policy {
+                poll_ms: 1000,
+                clock: "sim".into(),
+            },
+            service: Service::Receipts,
+            payment: None,
+        };
+        let bytes = sign(&w.client, typ::WITNESS, &e).map_err(|e| SimError(e.to_string()))?;
+        let text = String::from_utf8(bytes.clone()).expect("jws is ascii");
+        let folder = w.folder();
+        let file = format!("witness/{chain}/engage.jws");
+        self.storage.put(&folder, &file, bytes);
+        self.witnesses[i].engagement = Some(text);
         Ok(())
     }
 
@@ -775,6 +907,9 @@ impl<R: Rules> Sim<R> {
         };
         let mut out: Vec<(String, String)> = Vec::new();
         for (i, w) in self.witnesses.iter().enumerate() {
+            if !self.engaged.contains(&i) {
+                continue; // an honest client embeds only engaged witnesses' receipts
+            }
             let seen = &self.receipted[i];
             let mut best: Option<(u64, String, Vec<u8>)> = None;
             let mut complete = true;
@@ -839,6 +974,18 @@ impl<R: Rules> Sim<R> {
         next_state: Option<R::State>,
         key_change: Option<KeyChange>,
     ) -> Result<Hash, SimError> {
+        self.write_proposal_full(p, link, next_state, key_change, None, None)
+    }
+
+    fn write_proposal_full(
+        &mut self,
+        p: PartyIndex,
+        link: Link,
+        next_state: Option<R::State>,
+        key_change: Option<KeyChange>,
+        reveal: Option<Vec<u8>>,
+        witness_change: Option<(Vec<usize>, Vec<usize>)>,
+    ) -> Result<Hash, SimError> {
         // A `recover` is signed by the new key it introduces (§6.7); everything else by the
         // party's established key.
         let signer = match (&key_change, link.kind()) {
@@ -863,9 +1010,90 @@ impl<R: Rules> Sim<R> {
                 author: p,
                 next_state,
                 key_change,
+                reveal,
+                witness_change,
             },
         );
         Ok(hash)
+    }
+
+    /// `p` reveals the nonce it committed to at genesis (§6.6). Honest only for the next
+    /// unrevealed party in genesis order.
+    pub fn propose_reveal(&mut self, p: PartyIndex) -> Result<Hash, SimError> {
+        self.guard_proposer(p)?;
+        let next = (1..self.n()).find(|q| !self.revealed.contains_key(q));
+        if next != Some(p) {
+            return err(format!("the next reveal is {next:?}'s, not {p}'s"));
+        }
+        let nonce = self.parties[p].nonce.to_vec();
+        let body = json!({ "nonce": b64url(&nonce) });
+        let link = self.build_link(p, self.open.round, "reveal", body, None);
+        self.write_proposal_full(p, link, None, None, Some(nonce), None)
+    }
+
+    /// `p` proposes a `witnesses` change (§11.2): seat the witnesses at `add` (which must have
+    /// engaged) and unseat those at `remove`.
+    pub fn propose_witnesses(
+        &mut self,
+        p: PartyIndex,
+        add: &[usize],
+        remove: &[usize],
+    ) -> Result<Hash, SimError> {
+        self.guard_proposer(p)?;
+        if add.is_empty() && remove.is_empty() {
+            return err("a witnesses link changes something");
+        }
+        let mut adds = Vec::new();
+        for &w in add {
+            let witness = self
+                .witnesses
+                .get(w)
+                .ok_or_else(|| SimError("no such witness".into()))?;
+            let engage = witness
+                .engagement
+                .clone()
+                .ok_or_else(|| SimError("that witness has not engaged".into()))?;
+            adds.push(json!({ "pubky": witness.pubky(), "kid": witness.kid(), "engage": engage }));
+        }
+        let removes: Vec<String> = remove.iter().map(|w| self.witnesses[*w].kid()).collect();
+        let body = json!({ "add": adds, "remove": removes });
+        let link = self.build_link(p, self.open.round, "witnesses", body, None);
+        let state = self.head().and_then(|h| h.state.clone());
+        self.write_proposal_full(
+            p,
+            link,
+            state,
+            None,
+            None,
+            Some((add.to_vec(), remove.to_vec())),
+        )
+    }
+
+    /// `p` disowns its current chain key (§5.3): a fresh key and Grant under the same identity
+    /// sign `keys/<kid>.revoked.jws`. The party keeps using the revoked key — that is what the
+    /// test wants to see caught. Returns the revocation's hash.
+    pub fn revoke_key(&mut self, p: PartyIndex) -> Hash {
+        let party = &self.parties[p];
+        let other = Keypair::random();
+        let grant = mint_grant(
+            &party.identity,
+            &other,
+            &party.client_id,
+            self.now_ms / 1000,
+        );
+        let r = Revocation {
+            v: PROTOCOL_VERSION,
+            kind: "revoked".into(),
+            revoked: party.kid(),
+            by: other.public_key().z32(),
+            grant,
+            ts: self.now_ms,
+        };
+        let bytes = sign(&other, typ::REVOKE, &r).expect("typ");
+        let hash = Hash::of(&bytes);
+        let file = format!("keys/{}.revoked.jws", r.revoked);
+        self.write_party(p, &file, bytes);
+        hash
     }
 
     /// `p` proposes rules content of `kind` in the current round.
@@ -1254,10 +1482,46 @@ impl<R: Rules> Sim<R> {
                 })
                 .map(|s| s.payload)
                 .collect();
-            self.rules.init(g, &confirmations, &[]).ok()
+            if self.rules.wants_reveals(g) {
+                None
+            } else {
+                self.rules.init(g, &confirmations, &[]).ok()
+            }
+        } else if let Some(nonce) = &prop.reveal {
+            // A reveal: when the last is in, the rules initialise (§6.6).
+            self.revealed.insert(prop.author, nonce.clone());
+            if (1..n).all(|p| self.revealed.contains_key(&p)) {
+                let g = self.genesis.as_ref().expect("genesis");
+                let genesis_nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(&g.nonce)
+                    .expect("genesis nonce");
+                let mut nonces = vec![genesis_nonce];
+                for p in 1..n {
+                    nonces.push(self.revealed[&p].clone());
+                }
+                let confirmations: Vec<Confirmation> = self.committed[0]
+                    .qc
+                    .iter()
+                    .filter_map(|(_, b, _)| {
+                        Signed::<Confirmation>::decode(b.clone(), typ::CONFIRM).ok()
+                    })
+                    .map(|s| s.payload)
+                    .collect();
+                self.rules.init(g, &confirmations, &nonces).ok()
+            } else {
+                None
+            }
         } else {
             prop.next_state.clone()
         };
+        if let Some((add, remove)) = &prop.witness_change {
+            for w in add {
+                self.engaged.insert(*w);
+            }
+            for w in remove {
+                self.engaged.remove(w);
+            }
+        }
         if let Some(kc) = &prop.key_change {
             let party = &mut self.parties[prop.author];
             party.client = Keypair::from_secret(&kc.secret);
@@ -1310,7 +1574,10 @@ impl<R: Rules> Sim<R> {
             let folder = p.folder();
             if let Some(files) = self.storage.folders.get(&folder) {
                 for (name, bytes) in files {
-                    if name.starts_with(&prefix) {
+                    // Chain records, and `keys/<kid>.revoked.jws` (§11.3).
+                    if name.starts_with(&prefix)
+                        || (name.starts_with("keys/") && name.ends_with(".revoked.jws"))
+                    {
                         records.push((p.pubky(), bytes.clone()));
                     }
                 }
@@ -1353,7 +1620,7 @@ impl<R: Rules> Sim<R> {
                     chain: chain.clone(),
                     record: hash.to_base64url(),
                     typ: typ.to_string(),
-                    seq: Some(seq),
+                    seq,
                     round,
                     by,
                     kid: self.witnesses[w].kid(),
@@ -1370,7 +1637,10 @@ impl<R: Rules> Sim<R> {
                 let rh = Hash::of(&rb);
                 if behaviour != WitnessBehaviour::DeletesReceipts {
                     let folder = self.witnesses[w].folder();
-                    let file = format!("witness/{chain}/{}-{}.jws", seq8(seq), rh.h16());
+                    let file = match seq {
+                        Some(seq) => format!("witness/{chain}/{}-{}.jws", seq8(seq), rh.h16()),
+                        None => format!("witness/{chain}/revoked-{}-{}.jws", r.by, rh.h16()),
+                    };
                     self.storage.put(&folder, &file, rb.clone());
                 }
                 self.receipted[w].insert(hash, (observed_at, rb));
@@ -1506,26 +1776,35 @@ impl<R: Rules> Sim<R> {
     }
 }
 
-/// What a record is, for a receipt: `(typ, seq, round, signer kid)`.
-fn describe(bytes: &[u8]) -> Option<(&'static str, u64, Option<u32>, String)> {
+/// What a record is, for a receipt: `(typ, seq, round, signer kid)`. A revocation has no seq
+/// and its `by` is the revoked kid (§11.3).
+fn describe(bytes: &[u8]) -> Option<(&'static str, Option<u64>, Option<u32>, String)> {
     if let Ok(l) = Signed::<Link>::decode(bytes.to_vec(), typ::LINK) {
         return Some((
             typ::LINK,
-            l.payload.seq,
+            Some(l.payload.seq),
             Some(l.payload.round),
             l.payload.kid,
         ));
     }
     if let Ok(c) = Signed::<Confirmation>::decode(bytes.to_vec(), typ::CONFIRM) {
-        return Some((typ::CONFIRM, c.payload.seq, c.payload.round, c.payload.kid));
+        return Some((
+            typ::CONFIRM,
+            Some(c.payload.seq),
+            c.payload.round,
+            c.payload.kid,
+        ));
     }
     if let Ok(r) = Signed::<Reject>::decode(bytes.to_vec(), typ::REJECT) {
         return Some((
             typ::REJECT,
-            r.payload.seq,
+            Some(r.payload.seq),
             Some(r.payload.round),
             r.payload.kid,
         ));
+    }
+    if let Ok(r) = Signed::<Revocation>::decode(bytes.to_vec(), typ::REVOKE) {
+        return Some((typ::REVOKE, None, None, r.payload.revoked));
     }
     None
 }

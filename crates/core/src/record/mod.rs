@@ -11,6 +11,7 @@ mod engage;
 mod link;
 mod receipt;
 mod reject;
+mod revoke;
 
 pub use confirm::Confirmation;
 pub use engage::{Engagement, Payment, Policy, Service};
@@ -19,6 +20,7 @@ pub use link::{
 };
 pub use receipt::{Receipt, Source};
 pub use reject::Reject;
+pub use revoke::Revocation;
 
 use base64::Engine;
 use serde::de::DeserializeOwned;

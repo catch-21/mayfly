@@ -58,6 +58,10 @@ pub trait Rules {
 
     /// Validate genesis (roles, options) and build the initial state once genesis is committed
     /// and, if the rules asked for randomness, every party's `reveal` is in (§6.6).
+    ///
+    /// `nonces` is empty when the rules do not want reveals; otherwise it has one entry per
+    /// party in genesis order — `nonces[0]` is the decoded `genesis.nonce` (the initiator's
+    /// public contribution) and `nonces[i]` the nonce `parties[i]` revealed.
     fn init(
         &self,
         genesis: &Genesis,

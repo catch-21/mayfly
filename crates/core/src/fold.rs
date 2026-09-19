@@ -15,14 +15,15 @@
 //!    witness quorum, never one receipt.
 //!
 //! The algorithm is written as the specification's numbered steps so that a reader can hold
-//! the two side by side. What this file does not yet do, and which test will drive it in:
+//! the two side by side. Step 4 (Grant windows) removes records the witness quorum places
+//! outside their key's window and folds again; [`verify`] is that loop.
 //!
-//! - `reveal` and `witnesses` links are not candidates yet (chess seat randomisation, witness
-//!   rotation);
-//! - Grant windows (step 4) are not yet consulted; revocations are collected only.
+//! Not modelled: an engagement lapsing at `until` (the fold has no clock of its own to read
+//! it against) and the `mirror` service tier's byte-for-byte comparison (`TamperedMirror`).
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use base64::Engine;
 use pubky_common::crypto::PublicKey;
 
 use crate::close::{max_subjects, CloseState};
@@ -32,7 +33,7 @@ use crate::hash::{ChainId, Hash};
 use crate::keys::{parse_z32, verify_grant, Seat};
 use crate::record::{
     CloseBody, CloseReason, Confirmation, Engagement, KeyChangeBody, Kind, Link, Receipt, Reject,
-    Signed,
+    RevealBody, Revocation, Signed, WitnessChange,
 };
 use crate::rules::{state_hash, Outcome, PartyIndex, Rules, Status as RulesStatus};
 use crate::typ;
@@ -245,9 +246,29 @@ impl Default for Config {
 ///
 /// `rules` must implement the id genesis pins, or the genesis is invalid (§6.6).
 pub fn verify<R: Rules>(rules: &R, inputs: &Inputs, config: &Config) -> Result<Verdict, Error> {
-    let mut fold = Fold::new(rules, inputs, config)?;
-    fold.run()?;
-    Ok(fold.finish())
+    // Step 4: a record a witness quorum places outside its Grant window, that nothing places
+    // inside it and that no committed successor has embedded, is INVALID: remove it and fold
+    // again. Each pass removes at least one record, so this terminates.
+    let mut excluded: HashSet<Hash> = HashSet::new();
+    let mut carried: Vec<Anomaly> = Vec::new();
+    loop {
+        let mut fold = Fold::new(rules, inputs, config, &excluded)?;
+        fold.run()?;
+        let invalid = fold.grant_windows();
+        if invalid.is_empty() {
+            let mut verdict = fold.finish();
+            carried.append(&mut verdict.anomalies);
+            verdict.anomalies = carried;
+            return Ok(verdict);
+        }
+        carried.extend(
+            fold.anomalies
+                .iter()
+                .filter(|a| a.kind == AnomalyKind::GrantWindow)
+                .cloned(),
+        );
+        excluded.extend(invalid);
+    }
 }
 
 // ─── Decoding ─────────────────────────────────────────────────────────────────────────────────
@@ -322,6 +343,9 @@ struct KeyChange {
     path: Option<String>,
 }
 
+/// A `witnesses` link's verified change: engagements to seat and kids to unseat.
+type WitnessSet = (Vec<(Engaged, Signed<Engagement>)>, Vec<String>);
+
 /// A link that passed step 3a at its seq.
 #[derive(Clone)]
 struct Candidate<S> {
@@ -334,6 +358,10 @@ struct Candidate<S> {
     quorum: usize,
     /// `rekey` / `recover`: the seat change to establish on commit.
     key_change: Option<KeyChange>,
+    /// `reveal`: the nonce, already checked against the author's `commit`.
+    reveal: Option<Vec<u8>>,
+    /// `witnesses`: engagements to seat (verified) and kids to unseat, from the next seq.
+    witnesses: Option<WitnessSet>,
     /// The link's embedded QC of `prev`, decoded and verified (empty for genesis).
     embedded_qc: Vec<Signed<Confirmation>>,
 }
@@ -387,9 +415,19 @@ struct Fold<'a, R: Rules> {
     engaged: Vec<Engaged>,
     /// Every engagement key ever established, by `kid`.
     engagement_keys: BTreeMap<String, PublicKey>,
+    /// Every decoded `engage.jws` in the inputs, for establishing witnesses seated later.
+    engagement_pool: Vec<Signed<Engagement>>,
     receipts: Receipts,
     /// Receipt bytes waiting for their engagement (embedded ones are verified in 3e).
     pending_receipts: Vec<Signed<Receipt>>,
+    /// Decoded `keys/<kid>.revoked.jws` files, verified once their kid is established.
+    revocation_pool: Vec<Signed<Revocation>>,
+    /// Verified revocations by revoked `kid`.
+    revocations: BTreeMap<String, Signed<Revocation>>,
+    /// Every chain key ever established: `kid → (party, Grant exp)`.
+    keys_seen: BTreeMap<String, (PartyIndex, u64)>,
+    /// Nonces revealed so far, by party (§6.6).
+    revealed: BTreeMap<PartyIndex, Vec<u8>>,
     verified: HashSet<Hash>,
     key_cache: BTreeMap<String, PublicKey>,
     state: Option<R::State>,
@@ -402,9 +440,14 @@ struct Fold<'a, R: Rules> {
 impl<'a, R: Rules> Fold<'a, R> {
     // ── Steps 1 and 2 ───────────────────────────────────────────────────────────────────────
 
-    fn new(rules: &'a R, inputs: &Inputs, config: &Config) -> Result<Self, Error> {
+    fn new(
+        rules: &'a R,
+        inputs: &Inputs,
+        config: &Config,
+        excluded: &HashSet<Hash>,
+    ) -> Result<Self, Error> {
         let cap = config.max_body_cap;
-        let mut seen = HashSet::new();
+        let mut seen = excluded.clone();
         let mut links: Vec<Signed<Link>> = decode_all(&inputs.links, typ::LINK, cap, &mut seen);
         let mut confirms: Vec<Signed<Confirmation>> =
             decode_all(&inputs.confirms, typ::CONFIRM, cap, &mut seen);
@@ -413,6 +456,8 @@ impl<'a, R: Rules> Fold<'a, R> {
             decode_all(&inputs.engagements, typ::WITNESS, cap, &mut seen);
         let mut receipts: Vec<Signed<Receipt>> =
             decode_all(&inputs.receipts, typ::WITNESS, cap, &mut seen);
+        let revocations: Vec<Signed<Revocation>> =
+            decode_all(&inputs.revocations, typ::REVOKE, cap, &mut seen);
 
         // One party's mirrored links alone prove every committed link except the head (§9.1):
         // the confirmations and receipts embedded in links join the pools.
@@ -476,6 +521,7 @@ impl<'a, R: Rules> Fold<'a, R> {
             client_id: initiator_claims.client_id.to_string(),
             paths: vec![initiator_path],
             grant_exp: initiator_claims.exp,
+            commit: None,
         });
         key_cache.insert(initiator_kid.clone(), parse_z32(&initiator_kid)?);
 
@@ -555,8 +601,13 @@ impl<'a, R: Rules> Fold<'a, R> {
             rejects_by_seq,
             engaged: Vec::new(),
             engagement_keys: BTreeMap::new(),
+            engagement_pool: engagements,
             receipts: Receipts::default(),
             pending_receipts: receipts,
+            revocation_pool: revocations,
+            revocations: BTreeMap::new(),
+            keys_seen: BTreeMap::new(),
+            revealed: BTreeMap::new(),
             verified: HashSet::new(),
             key_cache,
             state: None,
@@ -565,9 +616,14 @@ impl<'a, R: Rules> Fold<'a, R> {
             status: Status::Ongoing,
             anomalies,
         };
+        fold.keys_seen
+            .insert(initiator_kid, (0, initiator_claims.exp));
         fold.establish_genesis_seats();
-        fold.establish_genesis_witnesses(engagements);
+        for w in fold.genesis.witnesses.clone() {
+            fold.establish_witness(&w.pubky);
+        }
         fold.index_receipts();
+        fold.index_revocations();
         Ok(fold)
     }
 
@@ -608,75 +664,73 @@ impl<'a, R: Rules> Fold<'a, R> {
             }
             self.verified.insert(c.hash);
             self.key_cache.insert(c.payload.kid.clone(), kid_pk);
+            self.keys_seen
+                .insert(c.payload.kid.clone(), (party, claims.exp));
             self.seats[party] = Some(Seat {
                 pubky: iss,
                 kid: c.payload.kid.clone(),
                 client_id: claims.client_id.to_string(),
                 paths: vec![path.clone()],
                 grant_exp: claims.exp,
+                commit: c.payload.commit.clone(),
             });
         }
         self.keys_at.push(self.current_keys());
     }
 
-    /// Step 2: establish the GENESIS witnesses' engagements. Witnesses seated later by a
-    /// `witnesses` link are established in step 3f when that link commits.
-    fn establish_genesis_witnesses(&mut self, engagements: Vec<Signed<Engagement>>) {
-        for w in &self.genesis.witnesses {
-            let Ok(pubky_pk) = parse_z32(&w.pubky) else {
-                continue;
-            };
-            let mut mine: Vec<(Engaged, Hash)> = Vec::new();
-            for e in &engagements {
-                if e.payload.chain != self.chain || e.payload.kind != "engage" {
-                    continue;
-                }
-                let Ok(claims) = pubky_common::auth::grant::GrantClaims::decode(&e.payload.grant)
-                else {
-                    continue;
-                };
-                if claims.iss.z32() != w.pubky {
-                    continue;
-                }
-                let Ok(kid_pk) = parse_z32(&e.payload.kid) else {
-                    continue;
-                };
-                if verify_grant(&e.payload.grant, &pubky_pk, &kid_pk, &e.payload.path).is_err()
-                    || e.verify(&kid_pk).is_err()
-                {
-                    continue;
-                }
-                self.engagement_keys.insert(e.payload.kid.clone(), kid_pk);
-                mine.push((
-                    Engaged {
-                        pubky: w.pubky.clone(),
-                        kid: e.payload.kid.clone(),
-                        until: e.payload.until,
-                        poll_ms: e.payload.policy.poll_ms,
-                        path: e.payload.path.clone(),
-                    },
-                    e.hash,
-                ));
-            }
-            if mine.is_empty() {
-                continue;
-            }
-            let untils: BTreeSet<u64> = mine.iter().map(|(m, _)| m.until).collect();
-            if untils.len() > 1 {
-                self.anomalies.push(Anomaly {
-                    against: Some(w.pubky.clone()),
-                    seq: None,
-                    kind: AnomalyKind::WitnessEquivocation,
-                    evidence: mine.iter().map(|(_, h)| *h).collect(),
-                });
-            }
-            // The later `until` governs (§11.2).
-            let (governing, _) = mine
-                .into_iter()
-                .max_by_key(|(m, h)| (m.until, *h))
-                .expect("non-empty");
-            self.engaged.push(governing);
+    /// Verify one engagement as `pubky`'s: Grant under `pubky` with `cnf == kid`, write
+    /// capability on its `path`, signature under `kid`.
+    fn engagement_of(&mut self, e: &Signed<Engagement>, pubky: &str) -> Option<Engaged> {
+        if e.payload.chain != self.chain || e.payload.kind != "engage" {
+            return None;
         }
+        let claims = pubky_common::auth::grant::GrantClaims::decode(&e.payload.grant).ok()?;
+        if claims.iss.z32() != pubky {
+            return None;
+        }
+        let pubky_pk = parse_z32(pubky).ok()?;
+        let kid_pk = parse_z32(&e.payload.kid).ok()?;
+        verify_grant(&e.payload.grant, &pubky_pk, &kid_pk, &e.payload.path).ok()?;
+        e.verify(&kid_pk).ok()?;
+        self.engagement_keys.insert(e.payload.kid.clone(), kid_pk);
+        Some(Engaged {
+            pubky: pubky.to_string(),
+            kid: e.payload.kid.clone(),
+            until: e.payload.until,
+            poll_ms: e.payload.policy.poll_ms,
+            path: e.payload.path.clone(),
+        })
+    }
+
+    /// Step 2 / 3f: establish every engagement `pubky` has held for this chain from the pool
+    /// and seat the governing one — the later `until` (§11.2). Genesis witnesses are
+    /// established before the fold; witnesses seated by a `witnesses` link when it commits.
+    fn establish_witness(&mut self, pubky: &str) {
+        let pool = self.engagement_pool.clone();
+        let mut mine: Vec<(Engaged, Hash)> = Vec::new();
+        for e in &pool {
+            if let Some(engaged) = self.engagement_of(e, pubky) {
+                mine.push((engaged, e.hash));
+            }
+        }
+        if mine.is_empty() {
+            return;
+        }
+        let untils: BTreeSet<u64> = mine.iter().map(|(m, _)| m.until).collect();
+        if untils.len() > 1 {
+            self.anomalies.push(Anomaly {
+                against: Some(pubky.to_string()),
+                seq: None,
+                kind: AnomalyKind::WitnessEquivocation,
+                evidence: mine.iter().map(|(_, h)| *h).collect(),
+            });
+        }
+        let (governing, _) = mine
+            .into_iter()
+            .max_by_key(|(m, h)| (m.until, *h))
+            .expect("non-empty");
+        self.engaged.retain(|w| w.pubky != pubky);
+        self.engaged.push(governing);
     }
 
     /// Index every receipt whose engagement is established, verified under that key.
@@ -692,6 +746,41 @@ impl<'a, R: Rules> Fold<'a, R> {
                 }
                 _ => self.pending_receipts.push(r),
             }
+        }
+    }
+
+    /// Step 2: revocations, as discovery only. One per established kid; verified under the
+    /// embedded Grant of the same pubky (§5.3), signed by that Grant's `cnf`.
+    fn index_revocations(&mut self) {
+        let pending = std::mem::take(&mut self.revocation_pool);
+        for r in pending {
+            if r.payload.kind != "revoked" || self.revocations.contains_key(&r.payload.revoked) {
+                continue;
+            }
+            let Some(&(party, _)) = self.keys_seen.get(&r.payload.revoked) else {
+                self.revocation_pool.push(r);
+                continue;
+            };
+            let Ok(claims) = pubky_common::auth::grant::GrantClaims::decode(&r.payload.grant)
+            else {
+                continue;
+            };
+            let Some(seat) = self.seats[party].as_ref() else {
+                continue;
+            };
+            if claims.iss.z32() != seat.pubky || claims.cnf.z32() != r.payload.by {
+                continue;
+            }
+            let Ok(by_pk) = parse_z32(&r.payload.by) else {
+                continue;
+            };
+            let path = seat.paths.last().cloned().unwrap_or_default();
+            if verify_grant(&r.payload.grant, &self.pubkeys[party], &by_pk, &path).is_err()
+                || r.verify(&by_pk).is_err()
+            {
+                continue;
+            }
+            self.revocations.insert(r.payload.revoked.clone(), r);
         }
     }
 
@@ -807,6 +896,8 @@ impl<'a, R: Rules> Fold<'a, R> {
                     next_state: None,
                     quorum: self.q,
                     key_change: None,
+                    reveal: None,
+                    witnesses: None,
                     embedded_qc: Vec::new(),
                 }]
             } else {
@@ -998,6 +1089,8 @@ impl<'a, R: Rules> Fold<'a, R> {
                 next_state: None,
                 quorum: effective_quorum(kind, self.n, self.q),
                 key_change,
+                reveal: None,
+                witnesses: None,
                 embedded_qc: embedded,
             };
             match kind {
@@ -1067,8 +1160,71 @@ impl<'a, R: Rules> Fold<'a, R> {
                     });
                 }
                 Kind::Recover => {}
-                // Not yet candidates; see the module documentation.
-                Kind::Reveal | Kind::Witnesses => continue,
+                Kind::Reveal => {
+                    // The next party in genesis order who has not revealed; nobody else. The
+                    // initiator's contribution is `genesis.nonce`, so reveals start at 1.
+                    if !self.rules.wants_reveals(&self.genesis)
+                        || l.payload.state != prev.link.payload.state
+                    {
+                        continue;
+                    }
+                    let next = (1..self.n).find(|p| !self.revealed.contains_key(p));
+                    if next != Some(author) {
+                        continue;
+                    }
+                    let Ok(body) = serde_json::from_value::<RevealBody>(l.payload.body.clone())
+                    else {
+                        continue;
+                    };
+                    let Ok(nonce) =
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&body.nonce)
+                    else {
+                        continue;
+                    };
+                    let commit = self.seats[author].as_ref().and_then(|s| s.commit.clone());
+                    let Some(commit) = commit.and_then(|c| Hash::parse(&c).ok()) else {
+                        continue;
+                    };
+                    if Hash::of(&nonce) != commit {
+                        continue;
+                    }
+                    cand.reveal = Some(nonce);
+                }
+                Kind::Witnesses => {
+                    if l.payload.state != prev.link.payload.state {
+                        continue;
+                    }
+                    let Ok(body) = serde_json::from_value::<WitnessChange>(l.payload.body.clone())
+                    else {
+                        continue;
+                    };
+                    if body.add.is_empty() && body.remove.is_empty() {
+                        continue;
+                    }
+                    let mut adds = Vec::new();
+                    let mut ok = true;
+                    for add in &body.add {
+                        let Ok(e) = decode_engagement(add.engage.as_bytes().to_vec()) else {
+                            ok = false;
+                            break;
+                        };
+                        if e.payload.kid != add.kid {
+                            ok = false;
+                            break;
+                        }
+                        match self.engagement_of(&e, &add.pubky) {
+                            Some(engaged) => adds.push((engaged, e)),
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !ok {
+                        continue;
+                    }
+                    cand.witnesses = Some((adds, body.remove.clone()));
+                }
             }
             out.push(cand);
         }
@@ -1647,6 +1803,7 @@ impl<'a, R: Rules> Fold<'a, R> {
                 }
                 Kind::Rekey | Kind::Recover => {
                     let kc = cand.key_change.clone().expect("checked in 3a");
+                    self.keys_seen.insert(kc.kid.clone(), (cand.author, kc.exp));
                     let seat = self.seats[cand.author].as_mut().expect("seated");
                     seat.kid = kc.kid;
                     seat.grant_exp = kc.exp;
@@ -1659,11 +1816,49 @@ impl<'a, R: Rules> Fold<'a, R> {
                         }
                     }
                 }
-                Kind::Reveal | Kind::Witnesses => unreachable!("not candidates"),
+                Kind::Reveal => {
+                    let nonce = cand.reveal.clone().expect("checked in 3a");
+                    self.revealed.insert(cand.author, nonce);
+                    if (1..self.n).all(|p| self.revealed.contains_key(&p)) {
+                        // The last reveal: seats are drawn and the rules initialise (§6.6).
+                        let genesis_nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .decode(&self.genesis.nonce)
+                            .map_err(|e| Error::Genesis(format!("nonce: {e}")))?;
+                        let mut nonces = vec![genesis_nonce];
+                        for p in 1..self.n {
+                            nonces.push(self.revealed[&p].clone());
+                        }
+                        let confirmations: Vec<Confirmation> = self.committed[0]
+                            .qc
+                            .iter()
+                            .map(|c| c.payload.clone())
+                            .collect();
+                        let state = self
+                            .rules
+                            .init(&self.genesis, &confirmations, &nonces)
+                            .map_err(|e| Error::Rules(e.0))?;
+                        self.state = Some(state);
+                    }
+                }
+                Kind::Witnesses => {
+                    // Every party confirmed it (quorum N in 3b). Seat the added witnesses —
+                    // their keys are established here, so their receipts become usable — and
+                    // unseat the removed kids, both from the next seq.
+                    let (adds, removes) = cand.witnesses.clone().expect("checked in 3a");
+                    for (engaged, e) in adds {
+                        self.engagement_pool.push(e);
+                        self.engaged.retain(|w| w.pubky != engaged.pubky);
+                        self.engaged.push(engaged.clone());
+                        // Later rotations of this witness are found from the pool from here.
+                        self.establish_witness(&engaged.pubky);
+                    }
+                    self.engaged.retain(|w| !removes.contains(&w.kid));
+                }
             }
         }
         self.keys_at.push(self.current_keys());
         self.index_receipts();
+        self.index_revocations();
         Ok(ended)
     }
 
@@ -1860,11 +2055,18 @@ impl<'a, R: Rules> Fold<'a, R> {
                         let ev = stopwatch_view.records.get(s).cloned().unwrap_or_default();
                         self.anomaly(kid.as_deref(), seq, AnomalyKind::LateSubject, ev);
                     }
-                    let state = self.state.as_ref().expect("state after genesis");
-                    let outcome = self
-                        .rules
-                        .close(state, &close.body)
-                        .map_err(|e| Error::Rules(e.0))?;
+                    // A party who never revealed can be closed out before the rules have
+                    // initialised (§6.6); there is then no state for the rules to judge.
+                    let outcome = match self.state.as_ref() {
+                        Some(state) => self
+                            .rules
+                            .close(state, &close.body)
+                            .map_err(|e| Error::Rules(e.0))?,
+                        None => Outcome {
+                            summary: "abandoned before the rules initialised".into(),
+                            winners: Vec::new(),
+                        },
+                    };
                     let qc: Vec<Signed<Confirmation>> = confirmed_by
                         .get(&close.link.hash)
                         .map(|m| m.values().cloned().collect())
@@ -2012,6 +2214,119 @@ impl<'a, R: Rules> Fold<'a, R> {
             dead,
             awaiting,
         };
+    }
+
+    // ── Step 4 ──────────────────────────────────────────────────────────────────────────────
+
+    /// Grant windows, by the witness quorum, after the whole fold. Returns the records that
+    /// are INVALID — placed after their key's window by a quorum, placed inside it by nothing,
+    /// and not part of any QC a committed successor embedded — for the caller to remove and
+    /// fold again. Everything else the quorum places late is an anomaly against its signer
+    /// (and, once history, against the confirmers who accepted it); `committed[]` is unchanged.
+    fn grant_windows(&mut self) -> Vec<Hash> {
+        if self.engaged.is_empty() {
+            return Vec::new();
+        }
+        // History: every link and QC confirmation a committed successor has embedded.
+        let mut history: HashSet<Hash> = HashSet::new();
+        let mut confirmers_of: BTreeMap<Hash, Vec<String>> = BTreeMap::new();
+        for c in &self.committed {
+            if c.is_final {
+                history.insert(c.link.hash);
+                history.extend(c.qc.iter().map(|q| q.hash));
+            }
+            confirmers_of.insert(
+                c.link.hash,
+                c.qc.iter().map(|q| q.payload.kid.clone()).collect(),
+            );
+        }
+        // Every verified record, with its signer and seq.
+        let mut records: Vec<(Hash, String, u64)> = Vec::new();
+        for (seq, ls) in &self.links_by_seq {
+            records.extend(
+                ls.iter()
+                    .filter(|l| self.verified.contains(&l.hash))
+                    .map(|l| (l.hash, l.payload.kid.clone(), *seq)),
+            );
+        }
+        for (seq, cs) in &self.confirms_by_seq {
+            records.extend(
+                cs.iter()
+                    .filter(|c| self.verified.contains(&c.hash))
+                    .map(|c| (c.hash, c.payload.kid.clone(), *seq)),
+            );
+        }
+        for (seq, rs) in &self.rejects_by_seq {
+            records.extend(
+                rs.iter()
+                    .filter(|r| self.verified.contains(&r.hash))
+                    .map(|r| (r.hash, r.payload.kid.clone(), *seq)),
+            );
+        }
+
+        let engaged = self.engaged.clone();
+        let mut invalid = Vec::new();
+        for (hash, kid, seq) in records {
+            let Some(&(_, exp)) = self.keys_seen.get(&kid) else {
+                continue;
+            };
+            let exp_ms = exp.saturating_mul(1000);
+            // The window's end as each witness saw it: the Grant's `exp`, or its own receipt
+            // of a revocation of this kid if earlier.
+            let bound_for = |w: &Engaged| -> u64 {
+                let revoked_at = self
+                    .revocations
+                    .get(&kid)
+                    .and_then(|r| self.receipts.observed(&r.hash, &w.kid));
+                revoked_at.map_or(exp_ms, |t| t.min(exp_ms))
+            };
+            let judgements: Vec<Option<bool>> = engaged
+                .iter()
+                .map(|w| {
+                    let t = self.receipts.observed(&hash, &w.kid)?;
+                    Some(t > bound_for(w))
+                })
+                .collect();
+            if adjudicate(&judgements) != TimeVerdict::Yes {
+                continue;
+            }
+            // (i) Does anything in the fold place it inside its window? A receipt of it by any
+            //     witness ever engaged, or a receipt of a counterparty's confirmation of it,
+            //     at or before the bound.
+            let placed = self.engagement_keys.keys().any(|wk| {
+                let bound = self
+                    .revocations
+                    .get(&kid)
+                    .and_then(|r| self.receipts.observed(&r.hash, wk))
+                    .map_or(exp_ms, |t| t.min(exp_ms));
+                self.receipts
+                    .observed(&hash, wk)
+                    .is_some_and(|t| t <= bound)
+                    || self
+                        .confirms_by_seq
+                        .get(&seq)
+                        .map(|cs| {
+                            cs.iter().any(|c| {
+                                Hash::parse(&c.payload.link).ok() == Some(hash)
+                                    && self
+                                        .receipts
+                                        .observed(&c.hash, wk)
+                                        .is_some_and(|t| t <= bound)
+                            })
+                        })
+                        .unwrap_or(false)
+            });
+            let is_history = history.contains(&hash);
+            self.anomaly(Some(&kid), seq, AnomalyKind::GrantWindow, vec![hash]);
+            if is_history {
+                for confirmer in confirmers_of.get(&hash).cloned().unwrap_or_default() {
+                    self.anomaly(Some(&confirmer), seq, AnomalyKind::GrantWindow, vec![hash]);
+                }
+            } else if !placed {
+                invalid.push(hash);
+            }
+        }
+        invalid
     }
 
     // ── Step 5 ──────────────────────────────────────────────────────────────────────────────

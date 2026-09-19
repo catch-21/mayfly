@@ -264,6 +264,11 @@ Requirements and mitigations:
 - **Lifetime.** Grants expire and users can revoke them in Ring. A chain that outlives a party's
   Grant uses a `rekey` link (§6.7), signed by the old key and carrying the new Grant; a party
   who has actually lost the key uses `recover`, which is deliberately slow and never automatic.
+  A `rekey` must land **before** `exp`: after it, the old key's signature on the rekey is itself
+  outside its window (§9.2 step 4), and under unanimity so is every QC the party has since
+  joined — when the head falls to a window verdict the seq before it loses its successor and is
+  provisional again, so the whole tail after `exp` falls with it. Past `exp`, `recover` is the
+  only way back.
 - **Seat identity.** A party's seat is bound to more than their pubky: the verifier records the
   `client_id` of the Grant that took the seat at genesis, and a `rekey` must present a Grant with
   the same `iss` **and** `client_id`. Another app's Grant for the same pubky — a notes app, a
@@ -292,6 +297,16 @@ A verifier must never depend on a file the party can delete. So:
   chain folders — receipts it, after which any record by that `kid` observed later is invalid
   (§9.2 step 4). Revoking in Ring remains the authoritative act; this record is how the chain's
   counterparties learn of it.
+
+  ```json
+  { "v": 1, "kind": "revoked", "revoked": "<the disowned kid>",
+    "by": "<the signing kid — cnf of grant>", "grant": "<Grant JWS under the same pubky>",
+    "ts": 1757779812345 }
+  ```
+
+  A verifier accepts at most one per `kid` it has established for that party, and checks the
+  Grant under the party's pubky with `cnf == by` and write capability on their folder, then the
+  signature under `by`.
 
 | Key | Holder | Used for |
 | --- | --- | --- |

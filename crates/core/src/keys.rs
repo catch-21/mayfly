@@ -23,6 +23,8 @@ pub struct Seat {
     pub paths: Vec<String>,
     /// Grant `exp` in Unix seconds, for the watchdog-receipt window check (§9.2 step 4).
     pub grant_exp: u64,
+    /// `BLAKE3(nonce)` from the genesis confirmation, when the rules want reveals (§6.6).
+    pub commit: Option<String>,
 }
 
 /// Verify a Grant JWS as the binding of `kid` to `pubky` with write access to `path` (§5.2).

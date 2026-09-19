@@ -16,7 +16,7 @@ use proptest::prelude::*;
 
 use pubky_mayfly::fold::{verify, AnomalyKind, Config, Inputs, Status};
 use pubky_mayfly::hash::{ChainId, Hash};
-use pubky_mayfly::sim::{Behaviour, Choice, SeqPlan, Sim, Tally, WitnessBehaviour};
+use pubky_mayfly::sim::{Behaviour, Choice, RandomTally, SeqPlan, Sim, Tally, WitnessBehaviour};
 use pubky_mayfly::vote::{designated, RoundVotes, Vote};
 use pubky_mayfly::witness::{adjudicate, quorum_size, Verdict};
 use pubky_mayfly::Error;
@@ -854,6 +854,237 @@ fn presence_from_files() {
         .iter()
         .any(|a| a.kind == AnomalyKind::Obstruction
             && a.against.as_deref() == Some(sim.parties[2].kid().as_str())));
+}
+
+// ─── Reveals (§6.6) ───────────────────────────────────────────────────────────────────────────
+
+/// §6.6: when the rules want randomness, each party after the initiator reveals its nonce in
+/// genesis order, the verifier checks `BLAKE3(nonce)` against the genesis `commit`, and the
+/// rules initialise only when the last reveal commits. A wrong nonce is not a candidate; a
+/// reveal on rules that want none is not a candidate.
+#[test]
+fn reveals_seat_the_rules() {
+    let mut sim = Sim::new(RandomTally, 3, 0, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    assert!(
+        sim.head().unwrap().state.is_none(),
+        "no state before the reveals"
+    );
+    assert!(sim
+        .propose(0, "add", serde_json::json!({ "n": 1 }))
+        .is_err());
+    assert!(sim.propose_reveal(2).is_err(), "party 1 reveals first");
+    let r1 = sim.propose_reveal(1).unwrap();
+    sim.confirm(0, r1).unwrap();
+    sim.confirm(2, r1).unwrap();
+    assert!(sim.head().unwrap().state.is_none());
+    let r2 = sim.propose_reveal(2).unwrap();
+    sim.confirm(0, r2).unwrap();
+    sim.confirm(1, r2).unwrap();
+    let seed = sim.head().unwrap().state.as_ref().unwrap().seed.clone();
+    assert!(!seed.is_empty(), "the rules initialised from the reveals");
+    sim.play(&single(1, 3, 5)).unwrap();
+    let v = verify(&RandomTally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(v.committed_hashes(), sim.committed_hashes());
+    assert_eq!(v.status, Status::Ongoing);
+    assert!(v.anomalies.is_empty(), "{:?}", v.anomalies);
+
+    // A nonce that does not hash to the commit is not a reveal.
+    let mut sim = Sim::new(RandomTally, 3, 0, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    sim.parties[1].nonce = [7; 16];
+    let bad = sim.propose_reveal(1).unwrap();
+    sim.confirm(0, bad).unwrap();
+    sim.confirm(2, bad).unwrap();
+    let v = verify(&RandomTally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes().len(),
+        1,
+        "the false reveal did not commit"
+    );
+    assert!(matches!(v.status, Status::Stalled { seq: 1, .. }));
+
+    // Rules that want no randomness have nothing to reveal.
+    let mut sim = Sim::new(Tally, 2, 0, &["chess.example"], 2);
+    sim.bootstrap().unwrap();
+    let r = sim.propose_reveal(1).unwrap();
+    sim.confirm(0, r).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(v.committed_hashes().len(), 1);
+}
+
+// ─── Witness rotation (§11.2) ─────────────────────────────────────────────────────────────────
+
+/// §11.2: a `witnesses` link seats the added witnesses (their `engage.jws` verified in the
+/// fold, so their receipts become usable) and unseats the removed ones from the next seq; it
+/// commits only with every party's confirmation, whatever `confirm_quorum` says.
+#[test]
+fn witnesses_link_rotates_the_engaged_set() {
+    let mut sim = Sim::new(Tally, 3, 1, &["chess.example"], 2);
+    sim.witnesses[0].behaviour = WitnessBehaviour::Dark;
+    sim.bootstrap().unwrap();
+    sim.play(&single(0, 3, 1)).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(
+        v.head().unwrap().witnessed,
+        (0, 1),
+        "the dark witness receipts nothing"
+    );
+
+    let w1 = sim.add_witness(WitnessBehaviour::Honest).unwrap();
+    let before = sim.committed_hashes();
+    let link = sim.propose_witnesses(0, &[w1], &[0]).unwrap();
+    sim.confirm(1, link).unwrap();
+    // q = 2 would commit an ordinary link here; a witnesses link needs everyone.
+    assert_eq!(sim.committed_hashes(), before);
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(v.committed_hashes(), before);
+    assert!(matches!(v.status, Status::Stalled { .. }));
+    sim.confirm(2, link).unwrap();
+    assert_eq!(sim.committed_hashes().last(), Some(&link));
+    sim.witnesses_observe();
+
+    sim.play(&single(1, 3, 2)).unwrap();
+    sim.play(&single(2, 3, 3)).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(v.committed_hashes(), sim.committed_hashes());
+    assert_eq!(v.engaged.len(), 1);
+    assert_eq!(v.engaged[0].pubky, sim.witnesses[w1].pubky());
+    assert_eq!(
+        v.head().unwrap().witnessed,
+        (1, 1),
+        "the new witness counts from the next seq"
+    );
+    assert!(v.anomalies.is_empty(), "{:?}", v.anomalies);
+}
+
+// ─── Grant windows (§9.2 step 4) ──────────────────────────────────────────────────────────────
+
+/// §9.2 step 4: a record a witness quorum observed after its Grant's `exp`, or after a receipted
+/// revocation of its key, is invalid while provisional and an anomaly once history; without a
+/// quorum of receipts no window check is possible.
+#[test]
+fn grant_windows_by_witness_quorum() {
+    const DAY_S: u64 = 86_400;
+
+    // Expiry, under unanimity: every QC after Carol's `exp` needs her expired key, so once her
+    // latest vote falls, the seq before it is no longer history and falls too — the whole tail
+    // after expiry is outside the window (§6.7: rekey *before* `exp`).
+    let mut sim = Sim::new(Tally, 3, 3, &["chess.example"], 3);
+    sim.reissue_grant(2, DAY_S);
+    sim.bootstrap().unwrap();
+    sim.play(&single(0, 3, 1)).unwrap();
+    let before = sim.committed_hashes();
+    sim.tick(2 * DAY_S * 1000);
+    sim.play(&single(0, 3, 2)).unwrap();
+    let all = sim.inputs_all();
+    let v = verify(&Tally, &all, &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes(),
+        before,
+        "Carol's expired confirmation is invalid"
+    );
+    assert!(matches!(v.status, Status::Stalled { seq: 2, .. }));
+    let kid2 = sim.parties[2].kid();
+    assert!(
+        v.anomalies
+            .iter()
+            .all(|a| a.kind == AnomalyKind::GrantWindow
+                && a.against.as_deref() == Some(kid2.as_str())),
+        "{:?}",
+        v.anomalies
+    );
+    assert!(!v.anomalies.is_empty());
+    let mut bare = all.clone();
+    bare.receipts.clear();
+    let v = verify(&Tally, &bare, &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes(),
+        sim.committed_hashes(),
+        "no receipts, no window check"
+    );
+    assert!(v.anomalies.is_empty());
+    sim.play(&single(0, 3, 3)).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(v.committed_hashes(), before);
+    assert!(matches!(v.status, Status::Stalled { seq: 2, .. }));
+    assert!(v
+        .anomalies
+        .iter()
+        .any(|a| a.kind == AnomalyKind::GrantWindow && a.seq == Some(3)));
+
+    // Expiry, under q = 2: Carol's expired link is invalid while it is the head, but once a
+    // successor whose QC does not need her embeds it, it is history — an anomaly against her
+    // and against the confirmer who accepted it, never a rewrite.
+    let mut sim = Sim::new(Tally, 3, 3, &["chess.example"], 2);
+    sim.reissue_grant(2, DAY_S);
+    sim.bootstrap().unwrap();
+    sim.play(&single(0, 3, 1)).unwrap();
+    let before = sim.committed_hashes();
+    sim.tick(2 * DAY_S * 1000);
+    sim.play(&single(2, 3, 2)).unwrap();
+    let carols = *sim.committed_hashes().last().unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes(),
+        before,
+        "Carol's expired link is invalid as the head"
+    );
+    sim.play(&single(0, 3, 3)).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes(),
+        sim.committed_hashes(),
+        "history is not rewritten"
+    );
+    assert_eq!(v.status, Status::Ongoing);
+    let kid2 = sim.parties[2].kid();
+    let kid0 = sim.parties[0].kid();
+    assert!(v
+        .anomalies
+        .iter()
+        .any(|a| a.kind == AnomalyKind::GrantWindow
+            && a.against.as_deref() == Some(kid2.as_str())
+            && a.evidence == vec![carols]));
+    assert!(
+        v.anomalies
+            .iter()
+            .any(|a| a.kind == AnomalyKind::GrantWindow
+                && a.against.as_deref() == Some(kid0.as_str())
+                && a.evidence == vec![carols]),
+        "the confirmer who accepted an expired Grant: {:?}",
+        v.anomalies
+    );
+
+    // Revocation.
+    let mut sim = Sim::new(Tally, 3, 3, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    sim.play(&single(0, 3, 1)).unwrap();
+    let before = sim.committed_hashes();
+    let revocation = sim.revoke_key(2);
+    sim.tick(1_000);
+    sim.witnesses_observe();
+    sim.tick(60_000);
+    sim.play(&single(0, 3, 2)).unwrap();
+    let all = sim.inputs_all();
+    assert!(all.revocations.iter().any(|b| Hash::of(b) == revocation));
+    let v = verify(&Tally, &all, &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes(),
+        before,
+        "a record by a revoked key, observed later, is invalid"
+    );
+    let kid2 = sim.parties[2].kid();
+    assert!(
+        v.anomalies
+            .iter()
+            .any(|a| a.kind == AnomalyKind::GrantWindow
+                && a.against.as_deref() == Some(kid2.as_str()))
+    );
+    let mut bare = all;
+    bare.receipts.clear();
+    let v = verify(&Tally, &bare, &config()).unwrap();
+    assert_eq!(v.committed_hashes(), sim.committed_hashes());
 }
 
 // ─── Skips (§6.3, §6.4) ───────────────────────────────────────────────────────────────────────
