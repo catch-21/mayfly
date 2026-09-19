@@ -316,6 +316,16 @@ pub struct Head<S> {
     pub state: Option<S>,
 }
 
+/// A `rekey` or `recover` pending on a proposal: applied to the party on commit.
+#[derive(Clone)]
+struct KeyChange {
+    secret: [u8; 32],
+    grant: String,
+    /// `recover` only: the new app and folder.
+    client_id: Option<String>,
+    path: Option<String>,
+}
+
 /// A proposal in the open seq.
 #[derive(Clone)]
 struct Proposal<S> {
@@ -323,8 +333,7 @@ struct Proposal<S> {
     link: Link,
     author: PartyIndex,
     next_state: Option<S>,
-    /// `rekey`: the new client key's secret and Grant, applied on commit.
-    rekey: Option<([u8; 32], String)>,
+    key_change: Option<KeyChange>,
 }
 
 /// The open seq: rounds, proposals and votes, as an honest client tracks them.
@@ -398,6 +407,8 @@ pub struct Sim<R: Rules> {
     pub committed: Vec<Head<R::State>>,
     /// The open seq.
     pub open: Open<R::State>,
+    /// Every skip made: `(seq, round, skipper)`.
+    pub skip_log: Vec<(u64, u32, PartyIndex)>,
     genesis: Option<Genesis>,
     genesis_bytes: Option<Vec<u8>>,
     /// Per witness: `record hash → (observed_at, receipt bytes)`.
@@ -481,6 +492,7 @@ impl<R: Rules> Sim<R> {
             q,
             committed: Vec::new(),
             open: Open::new(0),
+            skip_log: Vec::new(),
             genesis: None,
             genesis_bytes: None,
             receipted: vec![BTreeMap::new(); k],
@@ -624,7 +636,7 @@ impl<R: Rules> Sim<R> {
                 link,
                 author: 0,
                 next_state: None,
-                rekey: None,
+                key_change: None,
             },
         );
         Ok(hash)
@@ -825,10 +837,15 @@ impl<R: Rules> Sim<R> {
         p: PartyIndex,
         link: Link,
         next_state: Option<R::State>,
-        rekey: Option<([u8; 32], String)>,
+        key_change: Option<KeyChange>,
     ) -> Result<Hash, SimError> {
-        let bytes =
-            sign(&self.parties[p].client, typ::LINK, &link).map_err(|e| SimError(e.to_string()))?;
+        // A `recover` is signed by the new key it introduces (§6.7); everything else by the
+        // party's established key.
+        let signer = match (&key_change, link.kind()) {
+            (Some(kc), crate::record::Kind::Recover) => Keypair::from_secret(&kc.secret),
+            _ => self.parties[p].client.clone(),
+        };
+        let bytes = sign(&signer, typ::LINK, &link).map_err(|e| SimError(e.to_string()))?;
         let hash = Hash::of(&bytes);
         let file = format!(
             "{}links/{}-{}.jws",
@@ -845,7 +862,7 @@ impl<R: Rules> Sim<R> {
                 link,
                 author: p,
                 next_state,
-                rekey,
+                key_change,
             },
         );
         Ok(hash)
@@ -931,7 +948,126 @@ impl<R: Rules> Sim<R> {
         let body = json!({ "new_kid": new_client.public_key().z32() });
         let link = self.build_link(p, self.open.round, "rekey", body, Some(grant.clone()));
         let state = self.head().and_then(|h| h.state.clone());
-        self.write_proposal(p, link, state, Some((new_client.secret(), grant)))
+        self.write_proposal(
+            p,
+            link,
+            state,
+            Some(KeyChange {
+                secret: new_client.secret(),
+                grant,
+                client_id: None,
+                path: None,
+            }),
+        )
+    }
+
+    /// `p` proposes `recover` to a fresh key under `new_client_id` (§6.7): signed by the new
+    /// key, moving the party's folder to `/pub/<new_client_id>/mayfly/` from the next seq.
+    /// Returns the link hash; the old key stays in `parties[p]` until it commits.
+    pub fn propose_recover(
+        &mut self,
+        p: PartyIndex,
+        new_client_id: &str,
+    ) -> Result<Hash, SimError> {
+        self.guard_proposer(p)?;
+        let new_client = Keypair::random();
+        let party = &self.parties[p];
+        let grant = mint_grant(
+            &party.identity,
+            &new_client,
+            new_client_id,
+            self.now_ms / 1000,
+        );
+        let path = format!("/pub/{new_client_id}/{PROTOCOL_FOLDER}/");
+        let body = json!({ "new_kid": new_client.public_key().z32(), "path": path });
+        let mut link = self.build_link(p, self.open.round, "recover", body, Some(grant.clone()));
+        link.kid = new_client.public_key().z32();
+        let state = self.head().and_then(|h| h.state.clone());
+        self.write_proposal(
+            p,
+            link,
+            state,
+            Some(KeyChange {
+                secret: new_client.secret(),
+                grant,
+                client_id: Some(new_client_id.to_string()),
+                path: Some(path),
+            }),
+        )
+    }
+
+    /// `p` proposes `close {abandoned}` naming `subjects` (§6.8). Judged outside rounds: not a
+    /// vote, so the model's open round is untouched. Returns the close's hash.
+    pub fn propose_abandoned(
+        &mut self,
+        p: PartyIndex,
+        subjects: &[PartyIndex],
+    ) -> Result<Hash, SimError> {
+        if self.committed.is_empty() {
+            return err("genesis has not committed");
+        }
+        if subjects.contains(&p) || subjects.is_empty() {
+            return err("a close names others, and at least one");
+        }
+        let body = CloseBody {
+            reason: CloseReason::Abandoned,
+            subject: subjects.iter().map(|s| self.parties[*s].pubky()).collect(),
+            pending: self
+                .open
+                .current_proposals()
+                .iter()
+                .map(Hash::to_base64url)
+                .collect(),
+        };
+        let link = self.build_link(
+            p,
+            0,
+            "close",
+            serde_json::to_value(&body).expect("close body"),
+            None,
+        );
+        let bytes =
+            sign(&self.parties[p].client, typ::LINK, &link).map_err(|e| SimError(e.to_string()))?;
+        let hash = Hash::of(&bytes);
+        let file = format!(
+            "{}links/{}-{}.jws",
+            self.chain_folder(),
+            seq8(link.seq),
+            hash.h16()
+        );
+        self.write_party(p, &file, bytes);
+        Ok(hash)
+    }
+
+    /// `p` confirms an abandoned close: a confirmation with no `round` (§6.8).
+    pub fn confirm_abandoned(&mut self, p: PartyIndex, close: Hash) -> Result<Hash, SimError> {
+        let head = self
+            .head()
+            .ok_or_else(|| SimError("genesis has not committed".into()))?;
+        let c = Confirmation {
+            v: PROTOCOL_VERSION,
+            chain: self.chain_id().clone(),
+            seq: self.open.seq,
+            round: None,
+            link: close.to_base64url(),
+            kid: self.parties[p].kid(),
+            ts: self.now_ms,
+            state: head.link.state.clone(),
+            grant: None,
+            path: None,
+            commit: None,
+        };
+        let bytes =
+            sign(&self.parties[p].client, typ::CONFIRM, &c).map_err(|e| SimError(e.to_string()))?;
+        let hash = Hash::of(&bytes);
+        let file = format!(
+            "{}confirms/{}-{}.jws",
+            self.chain_folder(),
+            seq8(c.seq),
+            close.h16()
+        );
+        self.write_party(p, &file, bytes);
+        Ok(hash)
     }
 
     fn write_confirmation(
@@ -1045,6 +1181,32 @@ impl<R: Rules> Sim<R> {
             return err("one skip per party per seq");
         }
         self.write_reject(p, None)?;
+        self.skip_log.push((self.open.seq, self.open.round, p));
+        Ok(())
+    }
+
+    /// `p` votes for nothing in a round where the designated proposer has already passed
+    /// (§6.3): an ordinary empty reject, not a skip, so it spends no skip budget. Under
+    /// `q < N` this is how the remaining `N − q` rejects that kill an empty round arrive.
+    pub fn empty_reject(&mut self, p: PartyIndex) -> Result<(), SimError> {
+        self.guard_vote(p)?;
+        let Some(d) = self.designated() else {
+            return err("round 0 has no designated proposer to have passed");
+        };
+        let designated_passed = self
+            .open
+            .rounds
+            .get(&self.open.round)
+            .map(|r| {
+                r.by_party
+                    .get(&d)
+                    .is_some_and(|v| v.contains(&Vote::Nothing))
+            })
+            .unwrap_or(false);
+        if !designated_passed {
+            return err("the designated proposer has not passed; that would be a skip");
+        }
+        self.write_reject(p, None)?;
         Ok(())
     }
 
@@ -1096,10 +1258,16 @@ impl<R: Rules> Sim<R> {
         } else {
             prop.next_state.clone()
         };
-        if let Some((secret, grant)) = &prop.rekey {
+        if let Some(kc) = &prop.key_change {
             let party = &mut self.parties[prop.author];
-            party.client = Keypair::from_secret(secret);
-            party.grant = grant.clone();
+            party.client = Keypair::from_secret(&kc.secret);
+            party.grant = kc.grant.clone();
+            if let Some(client_id) = &kc.client_id {
+                party.client_id = client_id.clone();
+            }
+            if let Some(path) = &kc.path {
+                party.path = path.clone();
+            }
         }
 
         // Mirror (§7): every party holds the link and its QC.
@@ -1247,6 +1415,37 @@ impl<R: Rules> Sim<R> {
         hash
     }
 
+    /// Write a reject into `p`'s folder signed by `signer` — any key, so a test can veto with
+    /// an old key after a recover, or skip a second time. The model is not updated.
+    pub fn forge_reject(
+        &mut self,
+        p: PartyIndex,
+        signer: &Keypair,
+        seq: u64,
+        round: u32,
+        link: Option<Hash>,
+    ) -> Hash {
+        let r = Reject {
+            v: PROTOCOL_VERSION,
+            chain: self.chain_id().clone(),
+            seq,
+            round,
+            link: link.map(|h| h.to_base64url()).unwrap_or_default(),
+            kid: signer.public_key().z32(),
+            ts: self.now_ms,
+        };
+        let bytes = sign(signer, typ::REJECT, &r).expect("typ");
+        let hash = Hash::of(&bytes);
+        let file = format!(
+            "{}rejects/{}-r{round}-{}.jws",
+            self.chain_folder(),
+            seq8(seq),
+            hash.h16()
+        );
+        self.write_party(p, &file, bytes);
+        hash
+    }
+
     /// Delete every file `p` wrote whose name matches `predicate`.
     pub fn delete_where(&mut self, p: PartyIndex, predicate: impl Fn(&str) -> bool) {
         let folder = self.parties[p].folder();
@@ -1346,6 +1545,9 @@ pub enum Choice {
 /// One seq of honest activity: some parties propose at once in round 0, the rest vote, and if
 /// the round dies the designated proposer of each following round passes (`passes` times) or
 /// re-proposes the lowest-voted link, which everyone then confirms.
+///
+/// A party whose behaviour is `WalksAwayAt(s)` with `s <= seq` does nothing at all; when it is
+/// designated, `SkipsEarly` parties skip it (after `silent_wait_ms`), once each per seq.
 #[derive(Debug, Clone)]
 pub struct SeqPlan {
     /// Distinct parties proposing in round 0 (at least one).
@@ -1356,6 +1558,21 @@ pub struct SeqPlan {
     pub choices: Vec<Choice>,
     /// Rounds `1..=passes` end with the designated proposer passing.
     pub passes: u32,
+    /// How long skippers wait before skipping a silent designated proposer.
+    pub silent_wait_ms: u64,
+}
+
+impl SeqPlan {
+    /// One proposer, everyone confirms.
+    pub fn single(proposer: PartyIndex, n: usize, value: u64) -> Self {
+        Self {
+            proposers: vec![proposer],
+            values: vec![value],
+            choices: vec![Choice::Confirm(0); n],
+            passes: 0,
+            silent_wait_ms: 0,
+        }
+    }
 }
 
 impl<R: Rules> Sim<R> {
@@ -1385,6 +1602,11 @@ impl<R: Rules> Sim<R> {
             return err("a plan needs a proposer");
         }
         let seq = self.open.seq;
+        let silent = |sim: &Self, p: PartyIndex| matches!(sim.parties[p].behaviour, Behaviour::WalksAwayAt(s) if s <= seq);
+        proposers.retain(|p| !silent(self, *p));
+        if proposers.is_empty() {
+            return err("every proposer in the plan has walked away");
+        }
         let mut hashes = Vec::new();
         for (i, &p) in proposers.iter().enumerate() {
             let n_val = plan.values.get(i).copied().unwrap_or(1);
@@ -1393,7 +1615,7 @@ impl<R: Rules> Sim<R> {
         }
         self.witnesses_observe();
         for p in 0..n {
-            if proposers.contains(&p) {
+            if proposers.contains(&p) || silent(self, p) {
                 continue;
             }
             let choice = plan.choices.get(p).copied().unwrap_or(Choice::Confirm(0));
@@ -1410,28 +1632,57 @@ impl<R: Rules> Sim<R> {
                 return Ok(1);
             }
         }
-        // Everyone voted and nothing committed: the round is dead by construction.
+        // Everyone who is present voted and nothing committed: the round is dead unless a
+        // silent party's missing vote is what keeps it alive, which no honest party can fix
+        // in round 0 (§6.3: no skips there).
+        if !self.round_is_dead() {
+            return err("round 0 is alive only for a silent party's vote: the seq is stuck");
+        }
         let mut rounds = 1;
         loop {
             self.advance_round()?;
             rounds += 1;
             let d = self.designated().expect("round >= 1");
-            if self.open.round <= plan.passes {
-                self.pass(d)?;
-                self.tick(500);
-                // Under q < N one pass does not kill an empty round (§6.4: N − q + 1
-                // rejects); the others skip, once each per seq, until it is dead.
+            if silent(self, d) {
+                // A silent designated proposer: `SkipsEarly` parties skip it (§6.3), after
+                // waiting `silent_wait_ms`, until the round is dead or they run out.
+                self.tick(plan.silent_wait_ms);
                 for p in 0..n {
                     if self.round_is_dead() {
                         break;
                     }
-                    if p != d && !self.open.skipped.contains(&p) {
+                    if p != d
+                        && !silent(self, p)
+                        && self.parties[p].behaviour == Behaviour::SkipsEarly
+                        && !self.open.skipped.contains(&p)
+                    {
                         self.skip(p)?;
+                        self.tick(500);
+                        self.witnesses_observe();
+                    }
+                }
+                if !self.round_is_dead() {
+                    return err("a silent designated proposer and nobody left to skip them");
+                }
+                continue;
+            }
+            if self.open.round <= plan.passes {
+                self.pass(d)?;
+                self.tick(500);
+                // Under q < N one pass does not kill an empty round (§6.4: N − q + 1
+                // rejects); the others vote for nothing too until it is dead. The designated
+                // party has acted, so these are ordinary empty rejects, not skips (§6.3).
+                for p in 0..n {
+                    if self.round_is_dead() {
+                        break;
+                    }
+                    if p != d && !silent(self, p) {
+                        self.empty_reject(p)?;
                         self.tick(500);
                     }
                 }
                 if !self.round_is_dead() {
-                    return err("no skips left to kill an empty round");
+                    return err("everyone voted for nothing and the round is not dead");
                 }
                 self.witnesses_observe();
                 continue;
@@ -1447,7 +1698,7 @@ impl<R: Rules> Sim<R> {
             self.tick(500);
             self.witnesses_observe();
             for p in 0..n {
-                if p == d {
+                if p == d || silent(self, p) {
                     continue;
                 }
                 self.confirm(p, link)?;
@@ -1457,7 +1708,10 @@ impl<R: Rules> Sim<R> {
                     return Ok(rounds);
                 }
             }
-            return err("everyone confirmed and nothing committed");
+            if self.round_is_dead() {
+                continue;
+            }
+            return err("everyone present voted and the round is neither committed nor dead");
         }
     }
 }

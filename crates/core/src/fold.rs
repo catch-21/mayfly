@@ -17,12 +17,9 @@
 //! The algorithm is written as the specification's numbered steps so that a reader can hold
 //! the two side by side. What this file does not yet do, and which test will drive it in:
 //!
-//! - `recover`, `reveal` and `witnesses` links are not candidates yet
-//!   (`recover_veto_window`, `folders_follow_declared_paths`);
-//! - every time question — abandoned-close adjudication, the recover delay, premature skips
-//!   and Grant windows (step 4) — is left *asserted*: the receipts are indexed and `witnessed
-//!   m/k` is reported, but the stopwatch of §11.3 is not yet consulted
-//!   (`close_verdicts_never_contradict_when_final`).
+//! - `reveal` and `witnesses` links are not candidates yet (chess seat randomisation, witness
+//!   rotation);
+//! - Grant windows (step 4) are not yet consulted; revocations are collected only.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -40,7 +37,7 @@ use crate::record::{
 use crate::rules::{state_hash, Outcome, PartyIndex, Rules, Status as RulesStatus};
 use crate::typ;
 use crate::vote::{designated, effective_quorum, RoundVotes, Vote};
-use crate::witness::{Engaged, Receipts};
+use crate::witness::{adjudicate, Engaged, Receipts, Verdict as TimeVerdict};
 use crate::PROTOCOL_FOLDER;
 
 /// Everything the caller could find. Bytes only; the fold decodes and verifies.
@@ -104,13 +101,31 @@ pub enum Status {
 pub struct Committed {
     /// The link.
     pub link: Signed<Link>,
-    /// Confirmations forming its QC.
+    /// Its author.
+    pub author: PartyIndex,
+    /// Confirmations forming its QC (for an adjudicated abandoned close, the non-subjects').
     pub qc: Vec<Signed<Confirmation>>,
     /// True once a successor has embedded this QC (§6.4).
     pub is_final: bool,
     /// *Witnessed m/k*: how many of the engaged witnesses receipted every confirmation of its
     /// QC (and so its QC-completing one), over how many were engaged.
     pub witnessed: (usize, usize),
+}
+
+/// A `recover` the fold accepted, reported as such (§6.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recovery {
+    /// The seq of the recover link.
+    pub seq: u64,
+    /// Whose seat changed hands.
+    pub party: PartyIndex,
+    /// The key it moved to.
+    pub new_kid: String,
+    /// The recover link.
+    pub link: Hash,
+    /// The witness quorum's verdict on `recovery_delay_ms` (§9.2 step 3f): `Yes` honoured,
+    /// `Asserted` unproven.
+    pub delay: TimeVerdict,
 }
 
 /// Misbehaviour or inconsistency, attributed. Never stops the fold.
@@ -147,12 +162,15 @@ pub enum AnomalyKind {
     Obstruction,
     /// A confirmation whose `state` differs from the link's.
     RulesDivergence,
-    /// An abandoned close that named a present party, or exceeded the subject bound.
+    /// An abandoned close that exceeded the subject bound, named its author, or was adjudicated
+    /// invalid.
     VoidClose,
-    /// A subject record observed after an adjudicated close.
+    /// A subject record at the seq of an adjudicated-valid close.
     LateSubject,
-    /// A recover confirmed inside `recovery_delay_ms` (quorum-adjudicated).
+    /// A recover confirmed inside `recovery_delay_ms` (quorum-adjudicated); against a confirmer.
     PrematureRecover,
+    /// A provisional recover voided by its seat's established key (§6.7); against the new key.
+    VetoedRecover,
     /// An old-key reject after the recover became history.
     LateVeto,
     /// A record a witness quorum places after its Grant's `exp` or a revocation.
@@ -182,6 +200,8 @@ pub struct Verdict {
     pub seats: Vec<Seat>,
     /// Every witness engaged at the head.
     pub engaged: Vec<Engaged>,
+    /// Every accepted `recover`.
+    pub recoveries: Vec<Recovery>,
     /// Every anomaly, attributed.
     pub anomalies: Vec<Anomaly>,
 }
@@ -195,6 +215,11 @@ impl Verdict {
     /// The head, if anything is committed.
     pub fn head(&self) -> Option<&Committed> {
         self.committed.last()
+    }
+
+    /// Is the status final — a closed or adjudicated-abandoned chain?
+    pub fn is_final(&self) -> bool {
+        matches!(self.status, Status::Closed(_) | Status::Abandoned { .. })
     }
 }
 
@@ -287,7 +312,18 @@ fn storage_path(source: &str) -> &str {
 
 // ─── The fold ─────────────────────────────────────────────────────────────────────────────────
 
+/// A `rekey` or `recover` to apply to its author's seat on commit.
+#[derive(Debug, Clone)]
+struct KeyChange {
+    kid: String,
+    exp: u64,
+    /// `recover` only: the new app and folder.
+    client_id: Option<String>,
+    path: Option<String>,
+}
+
 /// A link that passed step 3a at its seq.
+#[derive(Clone)]
 struct Candidate<S> {
     link: Signed<Link>,
     author: PartyIndex,
@@ -296,10 +332,24 @@ struct Candidate<S> {
     next_state: Option<S>,
     /// The quorum this kind needs (§9.2 step 3b).
     quorum: usize,
-    /// `rekey`: the new key and Grant expiry to establish on commit.
-    rekey: Option<(String, u64)>,
+    /// `rekey` / `recover`: the seat change to establish on commit.
+    key_change: Option<KeyChange>,
     /// The link's embedded QC of `prev`, decoded and verified (empty for genesis).
     embedded_qc: Vec<Signed<Confirmation>>,
+}
+
+/// Everything step 3 learned about one seq before deciding it.
+struct SeqView<S> {
+    candidates: Vec<Candidate<S>>,
+    rounds: BTreeMap<u32, RoundVotes>,
+    /// Parties with any valid record at this seq, for presence (§6.8).
+    present: BTreeSet<PartyIndex>,
+    /// Every valid record at this seq by party, for the stopwatch.
+    records: BTreeMap<PartyIndex, Vec<Hash>>,
+    /// Established-key rejects at a seq holding a `recover` for that seat (§6.3, §6.7).
+    vetoes: BTreeMap<PartyIndex, Vec<Hash>>,
+    /// Valid skips: `(skipper, round, hash)`.
+    skips: Vec<(PartyIndex, u32, Hash)>,
 }
 
 /// How step 3d decided a seq.
@@ -344,6 +394,7 @@ struct Fold<'a, R: Rules> {
     key_cache: BTreeMap<String, PublicKey>,
     state: Option<R::State>,
     committed: Vec<Committed>,
+    recoveries: Vec<Recovery>,
     status: Status,
     anomalies: Vec<Anomaly>,
 }
@@ -426,10 +477,7 @@ impl<'a, R: Rules> Fold<'a, R> {
             paths: vec![initiator_path],
             grant_exp: initiator_claims.exp,
         });
-        key_cache.insert(
-            initiator_kid,
-            parse_z32(&genesis.parties[0].kid.clone().expect("kid"))?,
-        );
+        key_cache.insert(initiator_kid.clone(), parse_z32(&initiator_kid)?);
 
         // Keep only this chain's records. Genesis links other than ours are dropped.
         links.retain(|l| l.payload.chain == chain || l.hash == genesis_link.hash);
@@ -513,6 +561,7 @@ impl<'a, R: Rules> Fold<'a, R> {
             key_cache,
             state: None,
             committed: Vec::new(),
+            recoveries: Vec::new(),
             status: Status::Ongoing,
             anomalies,
         };
@@ -522,10 +571,12 @@ impl<'a, R: Rules> Fold<'a, R> {
         Ok(fold)
     }
 
-    /// Step 2: establish every party's kid, client_id and path from their genesis confirmation.
+    /// Step 2: establish every party's kid, client_id and path from their genesis
+    /// confirmation — inside the genesis QC or not (§6.6: key discovery as well as a vote).
     fn establish_genesis_seats(&mut self) {
         let genesis_hash = self.genesis_link.hash;
         let Some(confirms) = self.confirms_by_seq.get(&0).cloned() else {
+            self.keys_at.push(self.current_keys());
             return;
         };
         for c in confirms {
@@ -654,6 +705,10 @@ impl<'a, R: Rules> Fold<'a, R> {
             .collect()
     }
 
+    fn party_by_pubky(&self, pubky: &str) -> Option<PartyIndex> {
+        self.genesis.parties.iter().position(|p| p.pubky == pubky)
+    }
+
     fn key(&mut self, kid: &str) -> Option<PublicKey> {
         if let Some(k) = self.key_cache.get(kid) {
             return Some(k.clone());
@@ -684,6 +739,10 @@ impl<'a, R: Rules> Fold<'a, R> {
         &self.keys_at[i]
     }
 
+    fn seat_kid(&self, party: PartyIndex) -> Option<String> {
+        self.seats[party].as_ref().map(|s| s.kid.clone())
+    }
+
     fn anomaly(&mut self, against: Option<&str>, seq: u64, kind: AnomalyKind, evidence: Vec<Hash>) {
         self.anomalies.push(Anomaly {
             against: against.map(str::to_string),
@@ -698,20 +757,19 @@ impl<'a, R: Rules> Fold<'a, R> {
     fn embedded_qc(
         &mut self,
         confirms: &[String],
-        prev: &Signed<Link>,
-        prev_author: PartyIndex,
-        prev_quorum: usize,
+        prev: &Committed,
         keys: &BTreeMap<String, PartyIndex>,
     ) -> Option<Vec<Signed<Confirmation>>> {
+        let quorum = self.quorum_of(&prev.link.payload);
         let mut out = Vec::new();
         let mut voters: BTreeSet<PartyIndex> = BTreeSet::new();
-        voters.insert(prev_author);
+        voters.insert(prev.author);
         for c in confirms {
             let s = decode_confirmation(c.as_bytes().to_vec()).ok()?;
             if s.payload.chain != self.chain
-                || s.payload.seq != prev.payload.seq
-                || s.payload.round != Some(prev.payload.round)
-                || Hash::parse(&s.payload.link).ok()? != prev.hash
+                || s.payload.seq != prev.link.payload.seq
+                || s.payload.round != Some(prev.link.payload.round)
+                || Hash::parse(&s.payload.link).ok()? != prev.link.hash
             {
                 return None;
             }
@@ -722,12 +780,18 @@ impl<'a, R: Rules> Fold<'a, R> {
             voters.insert(party);
             out.push(s);
         }
-        (voters.len() >= prev_quorum).then_some(out)
+        (voters.len() >= quorum).then_some(out)
     }
 
     /// The quorum a committed link needed.
     fn quorum_of(&self, link: &Link) -> usize {
         effective_quorum(link.kind(), self.n, self.q)
+    }
+
+    /// The rules' allowances (§11.3), defaults applied.
+    fn allowances(&self) -> (u64, u64) {
+        let tc = self.genesis.time_control();
+        (tc.think_ms, tc.respond_ms)
     }
 
     // ── Step 3 ──────────────────────────────────────────────────────────────────────────────
@@ -742,49 +806,112 @@ impl<'a, R: Rules> Fold<'a, R> {
                     kind: Kind::Rules,
                     next_state: None,
                     quorum: self.q,
-                    rekey: None,
+                    key_change: None,
                     embedded_qc: Vec::new(),
                 }]
             } else {
                 self.candidates(seq)
             };
-            let mut rounds: BTreeMap<u32, RoundVotes> = BTreeMap::new();
-            let mut present: BTreeSet<PartyIndex> = BTreeSet::new();
-            self.votes(seq, &candidates, &mut rounds, &mut present);
-            self.unjustified_rounds(seq, &candidates, &rounds);
+            let mut view = SeqView {
+                candidates,
+                rounds: BTreeMap::new(),
+                present: BTreeSet::new(),
+                records: BTreeMap::new(),
+                vetoes: BTreeMap::new(),
+                skips: Vec::new(),
+            };
+            self.votes(seq, &mut view);
+            self.unjustified_rounds(seq, &view);
+            self.premature_skips(seq, &view);
 
-            match self.decide(seq, &candidates, &rounds)? {
-                Decision::History { index, qc } | Decision::Head { index, qc } => {
-                    let cand = &candidates[index];
-                    self.report_late_votes(seq, cand.link.hash, &candidates, &rounds);
-                    let stop = self.commit(seq, cand, qc)?;
-                    if stop {
-                        return Ok(());
-                    }
-                    seq += 1;
-                }
-                Decision::None => {
-                    if seq > 0 {
-                        if let Some(paused) = self.abandoned_close(seq, &present) {
-                            self.status = paused;
+            loop {
+                match self.decide(seq, &view)? {
+                    Decision::History { index, qc } => {
+                        let cand = view.candidates[index].clone();
+                        self.report_late_votes(seq, cand.link.hash, &view);
+                        if cand.kind == Kind::Recover {
+                            // History: a veto or a delay verdict surfacing now changes nothing.
+                            if let Some(v) = view.vetoes.get(&cand.author) {
+                                let old = self.seat_kid(cand.author);
+                                self.anomaly(old.as_deref(), seq, AnomalyKind::LateVeto, v.clone());
+                            }
+                            let delay = self.recover_delay(&cand, &qc);
+                            if delay == TimeVerdict::No {
+                                self.premature_recover(seq, &cand, &qc);
+                            }
+                            self.recoveries.push(Recovery {
+                                seq,
+                                party: cand.author,
+                                new_kid: cand.link.payload.kid.clone(),
+                                link: cand.link.hash,
+                                delay,
+                            });
+                        }
+                        if self.commit(seq, &cand, qc)? {
                             return Ok(());
                         }
+                        break;
                     }
-                    self.stall(seq, &candidates, &rounds);
-                    return Ok(());
+                    Decision::Head { index, qc } => {
+                        let cand = view.candidates[index].clone();
+                        if cand.kind == Kind::Recover {
+                            // Provisional: the old key's veto voids it, whatever votes it has.
+                            if let Some(v) = view.vetoes.get(&cand.author).cloned() {
+                                let mut ev = vec![cand.link.hash];
+                                ev.extend(v);
+                                self.anomaly(
+                                    Some(&cand.link.payload.kid),
+                                    seq,
+                                    AnomalyKind::VetoedRecover,
+                                    ev,
+                                );
+                                view.candidates.remove(index);
+                                continue;
+                            }
+                            // Delay, by the witness quorum: invalid only on a quorum's `No`.
+                            let delay = self.recover_delay(&cand, &qc);
+                            if delay == TimeVerdict::No {
+                                self.premature_recover(seq, &cand, &qc);
+                                view.candidates.remove(index);
+                                continue;
+                            }
+                            self.recoveries.push(Recovery {
+                                seq,
+                                party: cand.author,
+                                new_kid: cand.link.payload.kid.clone(),
+                                link: cand.link.hash,
+                                delay,
+                            });
+                        }
+                        self.report_late_votes(seq, cand.link.hash, &view);
+                        if self.commit(seq, &cand, qc)? {
+                            return Ok(());
+                        }
+                        break;
+                    }
+                    Decision::None => {
+                        if seq > 0 {
+                            match self.abandoned_close(seq, &view)? {
+                                CloseOutcome::Ended => return Ok(()),
+                                CloseOutcome::Paused(status) => {
+                                    self.status = status;
+                                    return Ok(());
+                                }
+                                CloseOutcome::NoClose => {}
+                            }
+                        }
+                        self.stall(seq, &view);
+                        return Ok(());
+                    }
                 }
             }
+            seq += 1;
         }
     }
 
     /// Step 3a: candidates at `seq`.
     fn candidates(&mut self, seq: u64) -> Vec<Candidate<R::State>> {
         let prev = self.committed.last().expect("seq > 0 has a head").clone();
-        let prev_author = *self
-            .keys_for(prev.link.payload.seq)
-            .get(&prev.link.payload.kid)
-            .expect("committed author is seated");
-        let prev_quorum = self.quorum_of(&prev.link.payload);
         let prev_keys = self.keys_for(prev.link.payload.seq).clone();
         let keys = self.keys_for(seq).clone();
         let links = self.links_by_seq.get(&seq).cloned().unwrap_or_default();
@@ -796,27 +923,60 @@ impl<'a, R: Rules> Fold<'a, R> {
             {
                 continue;
             }
-            let Some(&author) = keys.get(&l.payload.kid) else {
-                continue;
+            let kind = l.payload.kind();
+            // The signer: the seat's established key — except a `recover`, signed by the new
+            // key its embedded Grant binds (§6.7).
+            let (author, key_change) = if kind == Kind::Recover {
+                let Some(author) = self.party_by_pubky(&l.payload.author) else {
+                    continue;
+                };
+                if self.seats[author].is_none() {
+                    continue;
+                }
+                if l.payload.state != prev.link.payload.state {
+                    continue;
+                }
+                let Ok(body) = serde_json::from_value::<KeyChangeBody>(l.payload.body.clone())
+                else {
+                    continue;
+                };
+                let (Some(grant), Some(path)) = (&l.payload.grant, &body.path) else {
+                    continue;
+                };
+                if body.new_kid != l.payload.kid || keys.contains_key(&body.new_kid) {
+                    continue;
+                }
+                let Ok(new_pk) = parse_z32(&body.new_kid) else {
+                    continue;
+                };
+                let Ok(claims) = verify_grant(grant, &self.pubkeys[author], &new_pk, path) else {
+                    continue;
+                };
+                (
+                    author,
+                    Some(KeyChange {
+                        kid: body.new_kid.clone(),
+                        exp: claims.exp,
+                        client_id: Some(claims.client_id.to_string()),
+                        path: Some(path.clone()),
+                    }),
+                )
+            } else {
+                let Some(&author) = keys.get(&l.payload.kid) else {
+                    continue;
+                };
+                if self.genesis.parties[author].pubky != l.payload.author {
+                    continue;
+                }
+                (author, None)
             };
-            if self.genesis.parties[author].pubky != l.payload.author {
-                continue;
-            }
             if !self.sig_ok(&l, &l.payload.kid) {
                 continue;
             }
-            let Some(embedded) = self.embedded_qc(
-                &l.payload.confirms,
-                &prev.link,
-                prev_author,
-                prev_quorum,
-                &prev_keys,
-            ) else {
+            let Some(embedded) = self.embedded_qc(&l.payload.confirms, &prev, &prev_keys) else {
                 continue;
             };
-            let kind = l.payload.kind();
-            // Round >= 1: the designated party, except reveal (fixed author) and abandoned
-            // closes (outside rounds; step h).
+            // Abandoned closes are judged outside rounds (step h).
             let is_abandoned = kind == Kind::Close
                 && serde_json::from_value::<CloseBody>(l.payload.body.clone())
                     .map(|b| b.reason == CloseReason::Abandoned)
@@ -824,6 +984,7 @@ impl<'a, R: Rules> Fold<'a, R> {
             if is_abandoned {
                 continue;
             }
+            // Round >= 1: the designated party, except reveal (fixed author).
             if l.payload.round >= 1
                 && kind != Kind::Reveal
                 && designated(&self.chain, seq, l.payload.round, self.n) != author
@@ -836,7 +997,7 @@ impl<'a, R: Rules> Fold<'a, R> {
                 kind,
                 next_state: None,
                 quorum: effective_quorum(kind, self.n, self.q),
-                rekey: None,
+                key_change,
                 embedded_qc: embedded,
             };
             match kind {
@@ -898,28 +1059,35 @@ impl<'a, R: Rules> Fold<'a, R> {
                     if claims.client_id.to_string() != seat.client_id {
                         continue;
                     }
-                    cand.rekey = Some((body.new_kid, claims.exp));
+                    cand.key_change = Some(KeyChange {
+                        kid: body.new_kid,
+                        exp: claims.exp,
+                        client_id: None,
+                        path: None,
+                    });
                 }
+                Kind::Recover => {}
                 // Not yet candidates; see the module documentation.
-                Kind::Recover | Kind::Reveal | Kind::Witnesses => continue,
+                Kind::Reveal | Kind::Witnesses => continue,
             }
             out.push(cand);
         }
         out
     }
 
-    /// Steps 3b–3c: votes per `(party, round)`, with presence for step h.
-    fn votes(
-        &mut self,
-        seq: u64,
-        candidates: &[Candidate<R::State>],
-        rounds: &mut BTreeMap<u32, RoundVotes>,
-        present: &mut BTreeSet<PartyIndex>,
-    ) {
+    /// Steps 3b–3c: votes per `(party, round)`, vetoes set aside, presence and records kept
+    /// for steps g and h.
+    fn votes(&mut self, seq: u64, view: &mut SeqView<R::State>) {
         let keys = self.keys_for(seq).clone();
         let mut evidence: BTreeMap<(u32, PartyIndex), Vec<Hash>> = BTreeMap::new();
-        for c in candidates {
-            rounds
+        let recovering: BTreeSet<PartyIndex> = view
+            .candidates
+            .iter()
+            .filter(|c| c.kind == Kind::Recover)
+            .map(|c| c.author)
+            .collect();
+        for c in &view.candidates {
+            view.rounds
                 .entry(c.link.payload.round)
                 .or_default()
                 .propose(c.author, c.link.hash);
@@ -927,10 +1095,19 @@ impl<'a, R: Rules> Fold<'a, R> {
                 .entry((c.link.payload.round, c.author))
                 .or_default()
                 .push(c.link.hash);
-            present.insert(c.author);
+            view.present.insert(c.author);
+            view.records.entry(c.author).or_default().push(c.link.hash);
         }
-        let by_hash: BTreeMap<Hash, &Candidate<R::State>> =
-            candidates.iter().map(|c| (c.link.hash, c)).collect();
+        let by_hash: BTreeMap<Hash, (String, u32)> = view
+            .candidates
+            .iter()
+            .map(|c| {
+                (
+                    c.link.hash,
+                    (c.link.payload.state.clone(), c.link.payload.round),
+                )
+            })
+            .collect();
 
         for c in self.confirms_by_seq.get(&seq).cloned().unwrap_or_default() {
             let Some(&party) = keys.get(&c.payload.kid) else {
@@ -942,57 +1119,103 @@ impl<'a, R: Rules> Fold<'a, R> {
             let Ok(link) = Hash::parse(&c.payload.link) else {
                 continue;
             };
-            present.insert(party);
+            view.present.insert(party);
+            view.records.entry(party).or_default().push(c.hash);
             let Some(round) = c.payload.round else {
                 continue; // an abandoned-close confirmation: step h
             };
             if seq == 0 && link != self.genesis_link.hash {
                 continue;
             }
-            rounds
+            view.rounds
                 .entry(round)
                 .or_default()
                 .cast(party, Vote::For(link));
             evidence.entry((round, party)).or_default().push(c.hash);
-            if let Some(cand) = by_hash.get(&link) {
-                if seq > 0 && cand.link.payload.state != c.payload.state {
+            if let Some((state, _)) = by_hash.get(&link) {
+                if seq > 0 && *state != c.payload.state {
                     self.anomaly(
                         Some(&c.payload.kid),
                         seq,
                         AnomalyKind::RulesDivergence,
-                        vec![cand.link.hash, c.hash],
+                        vec![link, c.hash],
                     );
                 }
             }
         }
 
+        // Rounds in which the designated party acted (proposed or passed): an empty reject by
+        // anyone else there is an ordinary vote for nothing, not a skip (§6.3).
+        let rejects = self.rejects_by_seq.get(&seq).cloned().unwrap_or_default();
+        let mut designated_acted: BTreeSet<u32> = view
+            .candidates
+            .iter()
+            .filter(|c| {
+                c.link.payload.round >= 1
+                    && designated(&self.chain, seq, c.link.payload.round, self.n) == c.author
+            })
+            .map(|c| c.link.payload.round)
+            .collect();
+        for r in &rejects {
+            if r.payload.round >= 1 && r.payload.is_empty() {
+                if let Some(&party) = keys.get(&r.payload.kid) {
+                    if designated(&self.chain, seq, r.payload.round, self.n) == party
+                        && self.sig_ok(r, &r.payload.kid)
+                    {
+                        designated_acted.insert(r.payload.round);
+                    }
+                }
+            }
+        }
+
         let mut skipped: BTreeSet<PartyIndex> = BTreeSet::new();
-        for r in self.rejects_by_seq.get(&seq).cloned().unwrap_or_default() {
+        for r in rejects {
             let Some(&party) = keys.get(&r.payload.kid) else {
                 continue;
             };
             if !self.sig_ok(&r, &r.payload.kid) {
                 continue;
             }
-            present.insert(party);
+            view.present.insert(party);
+            view.records.entry(party).or_default().push(r.hash);
+            // An established-key reject at a seq holding a recover for that seat is a veto,
+            // not a round vote (§6.3, §6.7).
+            if recovering.contains(&party) {
+                view.vetoes.entry(party).or_default().push(r.hash);
+                continue;
+            }
             let round = r.payload.round;
+            let proposals_in_round: Vec<Hash> = view
+                .candidates
+                .iter()
+                .filter(|c| c.link.payload.round == round)
+                .map(|c| c.link.hash)
+                .collect();
             if r.payload.is_empty() {
                 let is_pass = round >= 1 && designated(&self.chain, seq, round, self.n) == party;
-                if !is_pass && (round == 0 || !skipped.insert(party)) {
+                let is_plain = round >= 1 && designated_acted.contains(&round);
+                if !is_pass && !is_plain {
+                    if round == 0 || !skipped.insert(party) {
+                        self.anomaly(
+                            Some(&r.payload.kid),
+                            seq,
+                            AnomalyKind::InvalidSkip,
+                            vec![r.hash],
+                        );
+                        continue;
+                    }
+                    view.skips.push((party, round, r.hash));
+                } else if is_plain && proposals_in_round.len() == 1 {
+                    // A vote for nothing against the sole valid proposal (§6.3).
                     self.anomaly(
                         Some(&r.payload.kid),
                         seq,
-                        AnomalyKind::InvalidSkip,
-                        vec![r.hash],
+                        AnomalyKind::Obstruction,
+                        vec![proposals_in_round[0], r.hash],
                     );
-                    continue;
                 }
             } else if let Ok(target) = Hash::parse(&r.payload.link) {
-                let proposals_in_round = candidates
-                    .iter()
-                    .filter(|c| c.link.payload.round == round)
-                    .count();
-                if by_hash.contains_key(&target) && proposals_in_round == 1 {
+                if by_hash.contains_key(&target) && proposals_in_round.len() == 1 {
                     self.anomaly(
                         Some(&r.payload.kid),
                         seq,
@@ -1001,32 +1224,34 @@ impl<'a, R: Rules> Fold<'a, R> {
                     );
                 }
             }
-            rounds.entry(round).or_default().cast(party, Vote::Nothing);
+            view.rounds
+                .entry(round)
+                .or_default()
+                .cast(party, Vote::Nothing);
             evidence.entry((round, party)).or_default().push(r.hash);
         }
 
-        for (round, votes) in rounds.iter() {
-            for party in votes.equivocators() {
-                let kid = self.seats[party].as_ref().map(|s| s.kid.clone());
-                let ev = evidence.get(&(*round, party)).cloned().unwrap_or_default();
-                self.anomaly(kid.as_deref(), seq, AnomalyKind::Equivocation, ev);
-            }
+        let equivocators: Vec<(u32, PartyIndex)> = view
+            .rounds
+            .iter()
+            .flat_map(|(round, votes)| votes.equivocators().into_iter().map(move |p| (*round, p)))
+            .collect();
+        for (round, party) in equivocators {
+            let kid = self.seat_kid(party);
+            let ev = evidence.get(&(round, party)).cloned().unwrap_or_default();
+            self.anomaly(kid.as_deref(), seq, AnomalyKind::Equivocation, ev);
         }
     }
 
     /// Step 3g: a round `r > 0` whose predecessor is not dead in the files.
-    fn unjustified_rounds(
-        &mut self,
-        seq: u64,
-        candidates: &[Candidate<R::State>],
-        rounds: &BTreeMap<u32, RoundVotes>,
-    ) {
-        for c in candidates {
+    fn unjustified_rounds(&mut self, seq: u64, view: &SeqView<R::State>) {
+        for c in &view.candidates {
             let r = c.link.payload.round;
             if r == 0 {
                 continue;
             }
-            let dead = rounds
+            let dead = view
+                .rounds
                 .get(&(r - 1))
                 .map(|v| v.is_dead(self.n, self.q))
                 .unwrap_or(false);
@@ -1041,13 +1266,132 @@ impl<'a, R: Rules> Fold<'a, R> {
         }
     }
 
-    /// Step 3d.
-    fn decide(
+    // ── The stopwatch (§11.3) ───────────────────────────────────────────────────────────────
+
+    // Every judgement below is made only from a witness's COMPLETE view of the records the
+    // files hold: a witness missing a receipt for any record that bears on the question
+    // cannot judge (`None`), never "did not see it". That is what keeps a verifier with fewer
+    // receipts at *asserted* rather than at the opposite final (§6.8, §11.2).
+
+    /// `ready(seq)` as witness `kid` saw it: the latest QC confirmation of the head. `None`
+    /// unless it receipted every one.
+    fn ready_as_seen_by(&self, kid: &str) -> Option<u64> {
+        let head = self.committed.last()?;
+        let mut latest = None;
+        for c in &head.qc {
+            let t = self.receipts.observed(&c.hash, kid)?;
+            latest = Some(latest.map_or(t, |l: u64| l.max(t)));
+        }
+        latest
+    }
+
+    /// The latest record by `party` at this seq that witness `kid` observed at or before `at`.
+    /// `Ok(None)` if the party has none; `Err(())` if the witness missed one of them.
+    fn last_record_before(
+        &self,
+        view: &SeqView<R::State>,
+        party: PartyIndex,
+        kid: &str,
+        at: u64,
+    ) -> Result<Option<u64>, ()> {
+        let Some(records) = view.records.get(&party) else {
+            return Ok(None);
+        };
+        let mut latest = None;
+        for h in records {
+            let t = self.receipts.observed(h, kid).ok_or(())?;
+            if t <= at {
+                latest = Some(latest.map_or(t, |l: u64| l.max(t)));
+            }
+        }
+        Ok(latest)
+    }
+
+    /// Step 3g, with receipts: a skip observed before the designated party had been silent for
+    /// `think_ms` is premature — an anomaly against the skipper, never a validity question.
+    fn premature_skips(&mut self, seq: u64, view: &SeqView<R::State>) {
+        if self.engaged.is_empty() || view.skips.is_empty() {
+            return;
+        }
+        let (think_ms, _) = self.allowances();
+        let engaged = self.engaged.clone();
+        for (skipper, round, skip) in &view.skips {
+            let skipped = designated(&self.chain, seq, *round, self.n);
+            let judgements: Vec<Option<bool>> = engaged
+                .iter()
+                .map(|w| {
+                    let t_skip = self.receipts.observed(skip, &w.kid)?;
+                    let mut start = self.ready_as_seen_by(&w.kid)?;
+                    if let Some(t) = self
+                        .last_record_before(view, skipped, &w.kid, t_skip)
+                        .ok()?
+                    {
+                        start = start.max(t);
+                    }
+                    Some(crate::witness::stopwatch::silence(t_skip, start) < think_ms)
+                })
+                .collect();
+            if adjudicate(&judgements) == TimeVerdict::Yes {
+                let kid = self.seat_kid(*skipper);
+                self.anomaly(kid.as_deref(), seq, AnomalyKind::PrematureSkip, vec![*skip]);
+            }
+        }
+    }
+
+    /// Step 3f: was `recovery_delay_ms` honoured between the recover and its earliest
+    /// confirmation, by the witness quorum? A witness judges only if it receipted the recover
+    /// and every confirmation of its QC.
+    fn recover_delay(
+        &self,
+        cand: &Candidate<R::State>,
+        qc: &[Signed<Confirmation>],
+    ) -> TimeVerdict {
+        if self.engaged.is_empty() {
+            return TimeVerdict::Asserted {
+                yes: 0,
+                no: 0,
+                silent: 0,
+            };
+        }
+        let delay = self.genesis.recovery_delay_ms;
+        let judgements: Vec<Option<bool>> = self
+            .engaged
+            .iter()
+            .map(|w| {
+                let t_rec = self.receipts.observed(&cand.link.hash, &w.kid)?;
+                let mut first: Option<u64> = None;
+                for c in qc {
+                    let t = self.receipts.observed(&c.hash, &w.kid)?;
+                    first = Some(first.map_or(t, |f| f.min(t)));
+                }
+                let first = first?;
+                Some(first.saturating_sub(t_rec) >= delay)
+            })
+            .collect();
+        adjudicate(&judgements)
+    }
+
+    /// The confirmers of a recover the quorum found premature.
+    fn premature_recover(
         &mut self,
         seq: u64,
-        candidates: &[Candidate<R::State>],
-        rounds: &BTreeMap<u32, RoundVotes>,
-    ) -> Result<Decision, Error> {
+        cand: &Candidate<R::State>,
+        qc: &[Signed<Confirmation>],
+    ) {
+        for c in qc {
+            self.anomaly(
+                Some(&c.payload.kid),
+                seq,
+                AnomalyKind::PrematureRecover,
+                vec![cand.link.hash, c.hash],
+            );
+        }
+    }
+
+    // ── Step 3d ─────────────────────────────────────────────────────────────────────────────
+
+    fn decide(&mut self, seq: u64, view: &SeqView<R::State>) -> Result<Decision, Error> {
+        let candidates = &view.candidates;
         // A successor with a QC embeds this seq's QC: history.
         let mut history: Option<(usize, Vec<Signed<Confirmation>>)> = None;
         let successors = self
@@ -1068,7 +1412,13 @@ impl<'a, R: Rules> Fold<'a, R> {
             let cand = &candidates[index];
             let keys_now = self.keys_for(seq).clone();
             let keys_after = self.keys_after(cand);
-            let Some(&s_author) = keys_after.get(&s.payload.kid) else {
+            // The successor's signer: a seated key, or — for a recover — its own new key.
+            let s_author = if s.payload.kind() == Kind::Recover {
+                self.party_by_pubky(&s.payload.author)
+            } else {
+                keys_after.get(&s.payload.kid).copied()
+            };
+            let Some(s_author) = s_author else {
                 continue;
             };
             if self.genesis.parties[s_author].pubky != s.payload.author
@@ -1076,13 +1426,14 @@ impl<'a, R: Rules> Fold<'a, R> {
             {
                 continue;
             }
-            let Some(qc) = self.embedded_qc(
-                &s.payload.confirms,
-                &cand.link,
-                cand.author,
-                cand.quorum,
-                &keys_now,
-            ) else {
+            let as_committed = Committed {
+                link: cand.link.clone(),
+                author: cand.author,
+                qc: Vec::new(),
+                is_final: false,
+                witnessed: (0, 0),
+            };
+            let Some(qc) = self.embedded_qc(&s.payload.confirms, &as_committed, &keys_now) else {
                 continue;
             };
             if !self.has_qc(&s, s_author, &keys_after) {
@@ -1105,7 +1456,7 @@ impl<'a, R: Rules> Fold<'a, R> {
         }
 
         // Otherwise the QC in the highest round. QCs only — never death evidence.
-        for (round, votes) in rounds.iter().rev() {
+        for (round, votes) in view.rounds.iter().rev() {
             let mut qcs: Vec<usize> = Vec::new();
             for (i, c) in candidates.iter().enumerate() {
                 if c.link.payload.round == *round && votes.votes_for(&c.link.hash) >= c.quorum {
@@ -1131,12 +1482,12 @@ impl<'a, R: Rules> Fold<'a, R> {
         Ok(Decision::None)
     }
 
-    /// The key map after `cand` commits (a `rekey` changes its author's key).
+    /// The key map after `cand` commits (a `rekey` or `recover` changes its author's key).
     fn keys_after(&self, cand: &Candidate<R::State>) -> BTreeMap<String, PartyIndex> {
         let mut keys = self.current_keys();
-        if let Some((new_kid, _)) = &cand.rekey {
+        if let Some(kc) = &cand.key_change {
             keys.retain(|_, p| *p != cand.author);
-            keys.insert(new_kid.clone(), cand.author);
+            keys.insert(kc.kid.clone(), cand.author);
         }
         keys
     }
@@ -1205,19 +1556,13 @@ impl<'a, R: Rules> Fold<'a, R> {
         qc
     }
 
-    /// History: any other QC at this seq is a late vote, never an input.
-    fn report_late_votes(
-        &mut self,
-        seq: u64,
-        committed: Hash,
-        candidates: &[Candidate<R::State>],
-        rounds: &BTreeMap<u32, RoundVotes>,
-    ) {
-        for c in candidates {
+    /// Any other QC at this seq is a late vote, never an input.
+    fn report_late_votes(&mut self, seq: u64, committed: Hash, view: &SeqView<R::State>) {
+        for c in &view.candidates {
             if c.link.hash == committed {
                 continue;
             }
-            let Some(votes) = rounds.get(&c.link.payload.round) else {
+            let Some(votes) = view.rounds.get(&c.link.payload.round) else {
                 continue;
             };
             if votes.votes_for(&c.link.hash) >= c.quorum {
@@ -1260,25 +1605,16 @@ impl<'a, R: Rules> Fold<'a, R> {
             }
         }
 
-        let k = self.engaged.len();
-        let m = self
-            .engaged
-            .iter()
-            .filter(|w| {
-                !qc.is_empty()
-                    && qc
-                        .iter()
-                        .all(|c| self.receipts.observed(&c.hash, &w.kid).is_some())
-            })
-            .count();
+        let witnessed = self.witnessed(&qc);
         if let Some(prev) = self.committed.last_mut() {
             prev.is_final = true;
         }
         self.committed.push(Committed {
             link: cand.link.clone(),
+            author: cand.author,
             qc: qc.clone(),
             is_final: false,
-            witnessed: (m, k),
+            witnessed,
         });
 
         // 3f.
@@ -1309,13 +1645,21 @@ impl<'a, R: Rules> Fold<'a, R> {
                     self.status = Status::Closed(outcome);
                     ended = true;
                 }
-                Kind::Rekey => {
-                    let (new_kid, exp) = cand.rekey.clone().expect("checked in 3a");
+                Kind::Rekey | Kind::Recover => {
+                    let kc = cand.key_change.clone().expect("checked in 3a");
                     let seat = self.seats[cand.author].as_mut().expect("seated");
-                    seat.kid = new_kid;
-                    seat.grant_exp = exp;
+                    seat.kid = kc.kid;
+                    seat.grant_exp = kc.exp;
+                    if let Some(client_id) = kc.client_id {
+                        seat.client_id = client_id;
+                    }
+                    if let Some(path) = kc.path {
+                        if seat.paths.last() != Some(&path) {
+                            seat.paths.push(path);
+                        }
+                    }
                 }
-                Kind::Recover | Kind::Reveal | Kind::Witnesses => unreachable!("not candidates"),
+                Kind::Reveal | Kind::Witnesses => unreachable!("not candidates"),
             }
         }
         self.keys_at.push(self.current_keys());
@@ -1323,35 +1667,45 @@ impl<'a, R: Rules> Fold<'a, R> {
         Ok(ended)
     }
 
-    /// Step 3h: an abandoned close at a seq with no QC. Adjudication is not yet consulted, so
-    /// every complete close is *asserted* or *contested* (§6.8) and pauses the chain.
+    /// *Witnessed m/k* for a QC.
+    fn witnessed(&self, qc: &[Signed<Confirmation>]) -> (usize, usize) {
+        let k = self.engaged.len();
+        let m = self
+            .engaged
+            .iter()
+            .filter(|w| {
+                !qc.is_empty()
+                    && qc
+                        .iter()
+                        .all(|c| self.receipts.observed(&c.hash, &w.kid).is_some())
+            })
+            .count();
+        (m, k)
+    }
+
+    // ── Step 3h ─────────────────────────────────────────────────────────────────────────────
+
+    /// An abandoned close at a seq with no QC (§6.8, §9.2 step 3h).
     fn abandoned_close(
         &mut self,
         seq: u64,
-        present_from_votes: &BTreeSet<PartyIndex>,
-    ) -> Option<Status> {
-        let prev = self.committed.last()?.clone();
-        let prev_author = *self
-            .keys_for(prev.link.payload.seq)
-            .get(&prev.link.payload.kid)?;
-        let prev_quorum = self.quorum_of(&prev.link.payload);
+        view: &SeqView<R::State>,
+    ) -> Result<CloseOutcome, Error> {
+        let Some(prev) = self.committed.last().cloned() else {
+            return Ok(CloseOutcome::NoClose);
+        };
         let prev_keys = self.keys_for(prev.link.payload.seq).clone();
         let keys = self.keys_for(seq).clone();
-        let party_by_pubky: BTreeMap<String, PartyIndex> = self
-            .genesis
-            .parties
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (p.pubky.clone(), i))
-            .collect();
 
         struct Close {
             link: Signed<Link>,
             author: PartyIndex,
             subjects: Vec<PartyIndex>,
+            body: CloseBody,
         }
         let mut closes: Vec<Close> = Vec::new();
-        let mut present: BTreeSet<PartyIndex> = present_from_votes.clone();
+        let mut present: BTreeSet<PartyIndex> = view.present.clone();
+        let mut records: BTreeMap<PartyIndex, Vec<Hash>> = view.records.clone();
         for l in self.links_by_seq.get(&seq).cloned().unwrap_or_default() {
             if l.payload.chain != self.chain
                 || l.payload.kind() != Kind::Close
@@ -1375,30 +1729,24 @@ impl<'a, R: Rules> Fold<'a, R> {
                 continue;
             }
             if self
-                .embedded_qc(
-                    &l.payload.confirms,
-                    &prev.link,
-                    prev_author,
-                    prev_quorum,
-                    &prev_keys,
-                )
+                .embedded_qc(&l.payload.confirms, &prev, &prev_keys)
                 .is_none()
             {
                 continue;
             }
             present.insert(author);
+            records.entry(author).or_default().push(l.hash);
             let mut subjects: Vec<PartyIndex> = body
                 .subject
                 .iter()
-                .filter_map(|s| party_by_pubky.get(s).copied())
+                .filter_map(|s| self.party_by_pubky(s))
                 .collect();
             subjects.sort_unstable();
             subjects.dedup();
-            let void = subjects.is_empty()
+            if subjects.is_empty()
                 || subjects.len() != body.subject.len()
                 || subjects.contains(&author)
-                || subjects.len() > max_subjects(self.n, false);
-            if void {
+            {
                 self.anomaly(
                     Some(&l.payload.kid),
                     seq,
@@ -1411,14 +1759,16 @@ impl<'a, R: Rules> Fold<'a, R> {
                 link: l,
                 author,
                 subjects,
+                body,
             });
         }
         if closes.is_empty() {
-            return None;
+            return Ok(CloseOutcome::NoClose);
         }
 
         // Confirmations without a round: agreement among the non-subjects.
-        let mut confirmed_by: BTreeMap<Hash, BTreeSet<PartyIndex>> = BTreeMap::new();
+        let mut confirmed_by: BTreeMap<Hash, BTreeMap<PartyIndex, Signed<Confirmation>>> =
+            BTreeMap::new();
         let mut per_party_closes: BTreeMap<PartyIndex, BTreeSet<Hash>> = BTreeMap::new();
         for c in self.confirms_by_seq.get(&seq).cloned().unwrap_or_default() {
             if c.payload.round.is_some() {
@@ -1434,7 +1784,12 @@ impl<'a, R: Rules> Fold<'a, R> {
                 continue;
             }
             present.insert(party);
-            confirmed_by.entry(link).or_default().insert(party);
+            records.entry(party).or_default().push(c.hash);
+            confirmed_by
+                .entry(link)
+                .or_default()
+                .entry(party)
+                .or_insert(c);
             per_party_closes.entry(party).or_default().insert(link);
         }
         for (party, hashes) in &per_party_closes {
@@ -1444,7 +1799,7 @@ impl<'a, R: Rules> Fold<'a, R> {
                 .map(|k| k.subjects.clone())
                 .collect();
             if subject_sets.len() > 1 {
-                let kid = self.seats[*party].as_ref().map(|s| s.kid.clone());
+                let kid = self.seat_kid(*party);
                 self.anomaly(
                     kid.as_deref(),
                     seq,
@@ -1454,55 +1809,191 @@ impl<'a, R: Rules> Fold<'a, R> {
             }
         }
 
-        let mut complete: Vec<&Close> = closes
-            .iter()
-            .filter(|k| {
-                let confirmers = confirmed_by.get(&k.link.hash).cloned().unwrap_or_default();
+        let mut complete: Vec<usize> = (0..closes.len())
+            .filter(|i| {
+                let k = &closes[*i];
+                let confirmers = confirmed_by.get(&k.link.hash);
                 (0..self.n)
                     .filter(|p| *p != k.author && !k.subjects.contains(p))
-                    .all(|p| confirmers.contains(&p))
+                    .all(|p| confirmers.map(|m| m.contains_key(&p)).unwrap_or(false))
             })
             .collect();
-        complete.sort_by_key(|k| k.link.hash);
-        let close = complete.first()?;
-        let present_subjects: Vec<PartyIndex> = close
-            .subjects
-            .iter()
-            .copied()
-            .filter(|s| present.contains(s))
-            .collect();
-        let state = if present_subjects.is_empty() {
-            CloseState::Asserted
-        } else {
-            CloseState::Contested {
-                present: present_subjects,
-            }
+        complete.sort_by_key(|i| closes[*i].link.hash);
+
+        let stopwatch_view = SeqView {
+            candidates: Vec::new(),
+            rounds: BTreeMap::new(),
+            present: present.clone(),
+            records,
+            vetoes: BTreeMap::new(),
+            skips: Vec::new(),
         };
-        Some(Status::Paused { seq, close: state })
+        let mut paused: Option<Status> = None;
+        for i in complete {
+            let close = &closes[i];
+            let present_subjects: Vec<PartyIndex> = close
+                .subjects
+                .iter()
+                .copied()
+                .filter(|s| present.contains(s))
+                .collect();
+
+            // Adjudicate first (§6.8): the bound depends on it.
+            let verdict =
+                self.close_silence(close.link.hash, &close.subjects, view, &stopwatch_view);
+            let adjudicated = matches!(verdict, TimeVerdict::Yes | TimeVerdict::No);
+            if close.subjects.len() > max_subjects(self.n, adjudicated) {
+                self.anomaly(
+                    Some(&close.link.payload.kid),
+                    seq,
+                    AnomalyKind::VoidClose,
+                    vec![close.link.hash],
+                );
+                continue;
+            }
+            match verdict {
+                TimeVerdict::Yes => {
+                    // Final: every subject was silent past the allowance when the close was
+                    // observed. A present subject's record is late.
+                    for s in &present_subjects {
+                        let kid = self.seat_kid(*s);
+                        let ev = stopwatch_view.records.get(s).cloned().unwrap_or_default();
+                        self.anomaly(kid.as_deref(), seq, AnomalyKind::LateSubject, ev);
+                    }
+                    let state = self.state.as_ref().expect("state after genesis");
+                    let outcome = self
+                        .rules
+                        .close(state, &close.body)
+                        .map_err(|e| Error::Rules(e.0))?;
+                    let qc: Vec<Signed<Confirmation>> = confirmed_by
+                        .get(&close.link.hash)
+                        .map(|m| m.values().cloned().collect())
+                        .unwrap_or_default();
+                    let witnessed = self.witnessed(&qc);
+                    if let Some(p) = self.committed.last_mut() {
+                        p.is_final = true;
+                    }
+                    self.committed.push(Committed {
+                        link: close.link.clone(),
+                        author: close.author,
+                        qc,
+                        is_final: true,
+                        witnessed,
+                    });
+                    self.status = Status::Abandoned {
+                        subjects: close.subjects.clone(),
+                        outcome,
+                    };
+                    return Ok(CloseOutcome::Ended);
+                }
+                TimeVerdict::No => {
+                    // Final: dropped.
+                    self.anomaly(
+                        Some(&close.link.payload.kid),
+                        seq,
+                        AnomalyKind::VoidClose,
+                        vec![close.link.hash],
+                    );
+                }
+                TimeVerdict::Asserted { .. } => {
+                    if paused.is_none() {
+                        let state = if present_subjects.is_empty() {
+                            CloseState::Asserted
+                        } else {
+                            CloseState::Contested {
+                                present: present_subjects,
+                            }
+                        };
+                        paused = Some(Status::Paused { seq, close: state });
+                    }
+                }
+            }
+        }
+        Ok(paused
+            .map(CloseOutcome::Paused)
+            .unwrap_or(CloseOutcome::NoClose))
+    }
+
+    /// Was every subject silent past the allowance when the close was observed (§11.3), by
+    /// the witness quorum? A witness judges a subject only if it receipted the close and the
+    /// record that started the subject's obligation.
+    fn close_silence(
+        &self,
+        close: Hash,
+        subjects: &[PartyIndex],
+        view: &SeqView<R::State>,
+        records: &SeqView<R::State>,
+    ) -> TimeVerdict {
+        if self.engaged.is_empty() {
+            return TimeVerdict::Asserted {
+                yes: 0,
+                no: 0,
+                silent: 0,
+            };
+        }
+        let (think_ms, respond_ms) = self.allowances();
+        let obliged: BTreeSet<PartyIndex> = self
+            .state
+            .as_ref()
+            .map(|s| self.rules.obliged(s).into_iter().collect())
+            .unwrap_or_default();
+        let judgements: Vec<Option<bool>> = self
+            .engaged
+            .iter()
+            .map(|w| {
+                let t_close = self.receipts.observed(&close, &w.kid)?;
+                for s in subjects {
+                    // The subject's obligation: to propose, if obliged; else to vote on the
+                    // earliest valid proposal by someone else. Every such proposal in the
+                    // files must have been receipted by this witness, or it cannot judge.
+                    let (start, allowance) = if obliged.contains(s) {
+                        (self.ready_as_seen_by(&w.kid)?, think_ms)
+                    } else {
+                        let mut first: Option<u64> = None;
+                        for c in view.candidates.iter().filter(|c| c.author != *s) {
+                            let t = self.receipts.observed(&c.link.hash, &w.kid)?;
+                            if t <= t_close {
+                                first = Some(first.map_or(t, |f| f.min(t)));
+                            }
+                        }
+                        match first {
+                            Some(t) => (t, respond_ms),
+                            None => return Some(false), // nothing was owed before the close
+                        }
+                    };
+                    let mut start = start;
+                    if let Some(t) = self.last_record_before(records, *s, &w.kid, t_close).ok()? {
+                        start = start.max(t);
+                    }
+                    if crate::witness::stopwatch::silence(t_close, start) <= allowance {
+                        return Some(false);
+                    }
+                }
+                Some(true)
+            })
+            .collect();
+        adjudicate(&judgements)
     }
 
     /// Step 3d, none: the next seq is open (no votes yet) or stalled (votes, no QC).
-    fn stall(
-        &mut self,
-        seq: u64,
-        candidates: &[Candidate<R::State>],
-        rounds: &BTreeMap<u32, RoundVotes>,
-    ) {
-        if seq > 0 && rounds.values().all(|v| v.by_party.is_empty()) {
+    fn stall(&mut self, seq: u64, view: &SeqView<R::State>) {
+        if seq > 0 && view.rounds.values().all(|v| v.by_party.is_empty()) {
             self.status = Status::Ongoing;
             return;
         }
-        let round = rounds.keys().next_back().copied().unwrap_or(0);
-        let (dead, voters) = rounds
+        let round = view.rounds.keys().next_back().copied().unwrap_or(0);
+        let (dead, voters) = view
+            .rounds
             .get(&round)
             .map(|v| (v.is_dead(self.n, self.q), v.voters()))
             .unwrap_or((false, BTreeSet::new()));
         let awaiting: Vec<PartyIndex> = (0..self.n)
             .filter(|p| self.seats[*p].is_some() && !voters.contains(p))
             .collect();
-        for c in candidates {
+        for c in &view.candidates {
             if c.link.payload.round == round
-                && rounds
+                && view
+                    .rounds
                     .get(&round)
                     .map(|v| v.votes_for(&c.link.hash) <= 1)
                     .unwrap_or(true)
@@ -1532,9 +2023,20 @@ impl<'a, R: Rules> Fold<'a, R> {
             status: self.status,
             seats: self.seats.into_iter().flatten().collect(),
             engaged: self.engaged,
+            recoveries: self.recoveries,
             anomalies: self.anomalies,
         }
     }
+}
+
+/// What step 3h concluded.
+enum CloseOutcome {
+    /// No complete abandoned close at this seq.
+    NoClose,
+    /// An adjudicated-valid close ended the chain.
+    Ended,
+    /// An asserted or contested close pauses it.
+    Paused(Status),
 }
 
 /// Step 1: is this link a valid genesis under `rules`? Returns the body and the initiator's

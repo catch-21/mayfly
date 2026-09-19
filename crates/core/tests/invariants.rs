@@ -16,7 +16,7 @@ use proptest::prelude::*;
 
 use pubky_mayfly::fold::{verify, AnomalyKind, Config, Inputs, Status};
 use pubky_mayfly::hash::{ChainId, Hash};
-use pubky_mayfly::sim::{Choice, SeqPlan, Sim, Tally, WitnessBehaviour};
+use pubky_mayfly::sim::{Behaviour, Choice, SeqPlan, Sim, Tally, WitnessBehaviour};
 use pubky_mayfly::vote::{designated, RoundVotes, Vote};
 use pubky_mayfly::witness::{adjudicate, quorum_size, Verdict};
 use pubky_mayfly::Error;
@@ -159,6 +159,7 @@ fn plan_strategy(n: usize, max_passes: u32) -> impl Strategy<Value = SeqPlan> {
                 })
                 .collect(),
             passes,
+            silent_wait_ms: 0,
         })
 }
 
@@ -246,11 +247,12 @@ proptest! {
         let v = verify(&Tally, &partial, &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
         prop_assert_eq!(v.committed_hashes(), full.committed_hashes());
         prop_assert_eq!(&v.status, &full.status);
-        // Deleted rejects may make a round look unjustified; that is a report, not an input.
+        // Deleted rejects may make a round look unjustified, or a pass round's empty rejects
+        // look like skips (premature, or one too many); those are reports, never inputs.
         prop_assert!(v
             .anomalies
             .iter()
-            .all(|a| a.kind == AnomalyKind::UnjustifiedRound), "{:?}", v.anomalies);
+            .all(|a| matches!(a.kind, AnomalyKind::UnjustifiedRound | AnomalyKind::PrematureSkip | AnomalyKind::InvalidSkip)), "{:?}", v.anomalies);
     }
 
     /// §6.4: honest parties converge within two rounds at every seq, and an honest run
@@ -323,6 +325,7 @@ fn dark_witness_changes_nothing_but_witnessed_counts() {
             values: vec![i, i + 1],
             choices: vec![Choice::Confirm(0); 3],
             passes: 0,
+            silent_wait_ms: 0,
         })
         .unwrap();
     }
@@ -440,6 +443,7 @@ fn mirrored_qc_is_not_hostile() {
                 Choice::Confirm(1),
             ],
             passes: 1,
+            silent_wait_ms: 0,
         })
         .unwrap();
     }
@@ -486,27 +490,430 @@ fn fold_needs_exactly_one_genesis() {
     assert_eq!(v.committed_hashes(), a.committed_hashes());
 }
 
-// ─── Waiting on the rest of the fold ─────────────────────────────────────────────────────────
-//
-// Each of these is one sentence from the specification; the message says which section it
-// pins and what it is waiting for.
+// ─── Recover (§6.7) ───────────────────────────────────────────────────────────────────────────
 
-#[test]
-#[ignore = "§6.4: a skip pushes a seq at most N − 1 rounds — needs sim Behaviour::SkipsEarly"]
-fn skips_are_bounded() {}
+fn single(proposer: usize, n: usize, value: u64) -> SeqPlan {
+    SeqPlan::single(proposer, n, value)
+}
 
+/// §6.7 / §9.2 step 3f: an old-key reject voids a recover while it is the provisional head,
+/// whatever votes it gathered; once a successor has embedded its QC the recover is history and
+/// the veto is an anomaly against the old key.
 #[test]
-#[ignore = "§6.8: only an adjudicated close is final; asserted/contested pauses — needs the stopwatch (§11.3) in step 3h"]
-fn close_verdicts_never_contradict_when_final() {}
+fn recover_veto_window() {
+    let mut sim = Sim::new(Tally, 3, 0, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    sim.play(&single(0, 3, 1)).unwrap();
+    let before = sim.committed_hashes();
+    let old_key = sim.parties[2].client.clone();
+    let old_kid = sim.parties[2].kid();
+    let seq = sim.open.seq;
 
-#[test]
-#[ignore = "§6.8: presence is decided from files — a subject record at the seq always contests an asserted close; needs sim propose_abandoned"]
-fn presence_from_files() {}
+    let r = sim.propose_recover(2, "notes.example").unwrap();
+    sim.confirm(0, r).unwrap();
+    sim.confirm(1, r).unwrap();
+    assert_eq!(sim.committed_hashes().last(), Some(&r));
+    let new_kid = sim.parties[2].kid();
+    assert_ne!(new_kid, old_kid);
 
-#[test]
-#[ignore = "§6.7: old-key veto voids a provisional recover and is an anomaly after it is history — needs recover in step 3a/3f"]
-fn recover_veto_window() {}
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(v.committed_hashes(), sim.committed_hashes());
+    assert_eq!(v.recoveries.len(), 1);
+    assert_eq!(v.recoveries[0].party, 2);
+    assert!(
+        matches!(v.recoveries[0].delay, Verdict::Asserted { .. }),
+        "no witnesses"
+    );
+    let seat = v
+        .seats
+        .iter()
+        .find(|s| s.pubky == sim.parties[2].pubky())
+        .unwrap();
+    assert_eq!(seat.kid, new_kid);
+    assert_eq!(seat.client_id, "notes.example");
+    assert_eq!(seat.paths.len(), 2);
 
+    // The old key says no while the recover is the head: void.
+    let veto = sim.forge_reject(2, &old_key, seq, 0, Some(r));
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes(),
+        before,
+        "a vetoed provisional recover is not committed"
+    );
+    assert!(v.recoveries.is_empty());
+    assert!(v
+        .anomalies
+        .iter()
+        .any(|a| a.kind == AnomalyKind::VetoedRecover
+            && a.against.as_deref() == Some(new_kid.as_str())
+            && a.evidence.contains(&veto)));
+    assert!(matches!(v.status, Status::Stalled { seq: s, .. } if s == seq));
+    let seat = v
+        .seats
+        .iter()
+        .find(|s| s.pubky == sim.parties[2].pubky())
+        .unwrap();
+    assert_eq!(seat.kid, old_kid, "the seat did not change hands");
+
+    // A successor built on the recover makes it history; the veto is now late.
+    sim.play(&single(0, 3, 2)).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(v.committed_hashes(), sim.committed_hashes());
+    assert!(v.committed.iter().any(|c| c.link.hash == r && c.is_final));
+    assert_eq!(v.recoveries.len(), 1);
+    assert!(!v
+        .anomalies
+        .iter()
+        .any(|a| a.kind == AnomalyKind::VetoedRecover));
+    assert!(v.anomalies.iter().any(|a| a.kind == AnomalyKind::LateVeto
+        && a.against.as_deref() == Some(old_kid.as_str())
+        && a.evidence.contains(&veto)));
+}
+
+/// §6.7 / §9.2 step 3f: `recovery_delay_ms` is a validity rule decided by the witness quorum.
+/// Confirmed inside the delay under a quorum's receipts, a recover is invalid and its
+/// confirmations are anomalies; without receipts it stands, labelled asserted; confirmed after
+/// the delay it is adjudicated honoured.
 #[test]
-#[ignore = "§7: a recover moves a party's folder and the fold follows — needs recover in step 3a/3f"]
-fn folders_follow_declared_paths() {}
+fn recover_delay_by_witness_quorum() {
+    let premature = |k: usize| {
+        let mut sim = Sim::new(Tally, 3, k, &["chess.example"], 3);
+        sim.bootstrap().unwrap();
+        sim.play(&single(0, 3, 1)).unwrap();
+        let before = sim.committed_hashes();
+        let r = sim.propose_recover(2, "notes.example").unwrap();
+        sim.witnesses_observe();
+        sim.tick(60_000);
+        sim.confirm(0, r).unwrap();
+        sim.witnesses_observe();
+        sim.confirm(1, r).unwrap();
+        sim.witnesses_observe();
+        (sim, before, r)
+    };
+
+    let (sim, before, r) = premature(3);
+    let all = sim.inputs_all();
+    let v = verify(&Tally, &all, &config()).unwrap();
+    assert_eq!(v.committed_hashes(), before, "premature recover is invalid");
+    assert!(v.recoveries.is_empty());
+    let confirmers: Vec<String> = vec![sim.parties[0].kid(), sim.parties[1].kid()];
+    for kid in &confirmers {
+        assert!(v
+            .anomalies
+            .iter()
+            .any(|a| a.kind == AnomalyKind::PrematureRecover
+                && a.against.as_deref() == Some(kid.as_str())
+                && a.evidence.contains(&r)));
+    }
+    // Without receipts nobody can prove elapsed time: the recover stands, asserted.
+    let mut bare = all.clone();
+    bare.receipts.clear();
+    let v = verify(&Tally, &bare, &config()).unwrap();
+    assert_eq!(v.committed_hashes().last(), Some(&r));
+    assert!(matches!(v.recoveries[0].delay, Verdict::Asserted { .. }));
+    // One witness of three decides nothing.
+    let one = sim.witnesses[0].folder();
+    let mut some = bare.clone();
+    some.receipts = sim.inputs_from(&[one.as_str()]).receipts;
+    let v = verify(&Tally, &some, &config()).unwrap();
+    assert_eq!(v.committed_hashes().last(), Some(&r));
+    assert!(matches!(
+        v.recoveries[0].delay,
+        Verdict::Asserted {
+            yes: 0,
+            no: 1,
+            silent: 2
+        }
+    ));
+
+    // Honoured.
+    let mut sim = Sim::new(Tally, 3, 3, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    sim.play(&single(0, 3, 1)).unwrap();
+    let r = sim.propose_recover(2, "notes.example").unwrap();
+    sim.witnesses_observe();
+    sim.tick(pubky_mayfly::genesis::MIN_RECOVERY_DELAY_MS + 60_000);
+    sim.confirm(0, r).unwrap();
+    sim.witnesses_observe();
+    sim.confirm(1, r).unwrap();
+    sim.witnesses_observe();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(v.committed_hashes(), sim.committed_hashes());
+    assert_eq!(v.recoveries[0].delay, Verdict::Yes);
+    assert!(v.anomalies.is_empty(), "{:?}", v.anomalies);
+}
+
+/// §7: a party's records live under the folder they declared; a `recover` moves it, and the
+/// verifier reads every folder a party has declared, in order.
+#[test]
+fn folders_follow_declared_paths() {
+    let mut sim = Sim::new(Tally, 3, 0, &["chess.example", "notes.example"], 3);
+    sim.bootstrap().unwrap();
+    sim.play(&single(2, 3, 1)).unwrap();
+    let old_folder = sim.parties[2].folder();
+    let r = sim.propose_recover(2, "recovered.example").unwrap();
+    sim.confirm(0, r).unwrap();
+    sim.confirm(1, r).unwrap();
+    let new_folder = sim.parties[2].folder();
+    assert_ne!(old_folder, new_folder);
+    sim.play(&single(2, 3, 2)).unwrap();
+    sim.play(&single(0, 3, 3)).unwrap();
+
+    let full = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(full.committed_hashes(), sim.committed_hashes());
+    assert!(full.anomalies.is_empty(), "{:?}", full.anomalies);
+    let seat = full
+        .seats
+        .iter()
+        .find(|s| s.pubky == sim.parties[2].pubky())
+        .unwrap();
+    assert_eq!(
+        seat.paths,
+        vec![
+            "/pub/chess.example/mayfly/".to_string(),
+            "/pub/recovered.example/mayfly/".to_string(),
+        ]
+    );
+
+    // Every currently declared folder together proves the chain …
+    let current: Vec<String> = sim.party_folders();
+    let refs: Vec<&str> = current.iter().map(String::as_str).collect();
+    let v = verify(&Tally, &sim.inputs_from(&refs), &config()).unwrap();
+    assert_eq!(v.committed_hashes(), full.committed_hashes());
+    // … and so do the recovered party's two folders alone, old then new.
+    let v = verify(
+        &Tally,
+        &sim.inputs_from(&[old_folder.as_str(), new_folder.as_str()]),
+        &config(),
+    )
+    .unwrap();
+    assert_eq!(v.committed_hashes(), full.committed_hashes());
+    // The new folder alone predates nothing: the history before the recover is not there.
+    assert!(verify(&Tally, &sim.inputs_from(&[new_folder.as_str()]), &config()).is_err());
+}
+
+// ─── Abandoned close (§6.8, §11.3) ────────────────────────────────────────────────────────────
+
+/// Alice proposes, Bob confirms, Carol says nothing for `wait_ms`; Alice closes naming Carol
+/// and Bob confirms the close. Witnesses observe everything.
+fn abandon_carol(k: usize, wait_ms: u64) -> (Sim<Tally>, Hash) {
+    let mut sim = Sim::new(Tally, 3, k, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    sim.play(&single(0, 3, 1)).unwrap();
+    let l = sim
+        .propose(0, "add", serde_json::json!({ "n": 2 }))
+        .unwrap();
+    sim.tick(1_000);
+    sim.witnesses_observe();
+    sim.confirm(1, l).unwrap();
+    sim.tick(1_000);
+    sim.witnesses_observe();
+    sim.tick(wait_ms);
+    let close = sim.propose_abandoned(0, &[2]).unwrap();
+    sim.tick(1_000);
+    sim.witnesses_observe();
+    sim.confirm_abandoned(1, close).unwrap();
+    sim.tick(1_000);
+    sim.witnesses_observe();
+    (sim, close)
+}
+
+const HOUR_MS: u64 = 3_600_000;
+
+/// How a verdict on an abandoned close reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CloseReading {
+    Ended,
+    Dropped,
+    Provisional,
+}
+
+fn read_close(v: &pubky_mayfly::fold::Verdict, close: Hash) -> CloseReading {
+    match &v.status {
+        Status::Abandoned { subjects, .. } => {
+            assert_eq!(subjects, &vec![2]);
+            assert_eq!(v.committed_hashes().last(), Some(&close));
+            CloseReading::Ended
+        }
+        Status::Paused { .. } => CloseReading::Provisional,
+        Status::Stalled { .. } => {
+            assert!(v
+                .anomalies
+                .iter()
+                .any(|a| a.kind == AnomalyKind::VoidClose && a.evidence.contains(&close)));
+            CloseReading::Dropped
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 32, .. ProptestConfig::default() })]
+
+    /// §6.8: only an adjudicated close is final; an asserted or contested close pauses. Two
+    /// verifiers with different receipt sets never reach contradictory finals: with every
+    /// receipt the close is adjudicated one way, and any subset yields the same final or a
+    /// provisional verdict.
+    #[test]
+    fn close_verdicts_never_contradict_when_final(
+        k in 1usize..=3,
+        wait in prop_oneof![Just(HOUR_MS), Just(23 * HOUR_MS), Just(25 * HOUR_MS), Just(72 * HOUR_MS)],
+        mask_a in any::<u64>(),
+        mask_b in any::<u64>(),
+    ) {
+        let (sim, close) = abandon_carol(k, wait);
+        let all = sim.inputs_all();
+        let full = verify(&Tally, &all, &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let expected = if wait > 24 * HOUR_MS { CloseReading::Ended } else { CloseReading::Dropped };
+        prop_assert_eq!(read_close(&full, close), expected.clone());
+
+        let mut bare = all.clone();
+        bare.receipts.clear();
+        let v = verify(&Tally, &bare, &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(read_close(&v, close), CloseReading::Provisional);
+        prop_assert_eq!(&v.status, &Status::Paused { seq: 2, close: pubky_mayfly::close::CloseState::Asserted });
+
+        for mask in [mask_a, mask_b] {
+            let mut partial = all.clone();
+            partial.receipts = partial
+                .receipts
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| keep(mask, *i))
+                .map(|(_, b)| b)
+                .collect();
+            let v = verify(&Tally, &partial, &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+            let reading = read_close(&v, close);
+            prop_assert!(
+                reading == CloseReading::Provisional || reading == expected,
+                "receipts subset reached {:?} where everything reaches {:?}", reading, expected
+            );
+            // Whatever the close, the committed prefix is the same.
+            prop_assert_eq!(&v.committed_hashes()[..2], &full.committed_hashes()[..2]);
+        }
+    }
+}
+
+/// §6.8: presence is decided from files, never from receipts. A subject with any record at
+/// the seq contests an asserted close; with a witness quorum, a subject who owed nothing
+/// cannot be closed out, and a subject who answered before the close is not silent.
+#[test]
+fn presence_from_files() {
+    // Carol proposes something nobody confirms, then Alice closes naming her: contested.
+    let mut sim = Sim::new(Tally, 3, 0, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    sim.propose(2, "add", serde_json::json!({ "n": 9 }))
+        .unwrap();
+    let close = sim.propose_abandoned(0, &[2]).unwrap();
+    sim.confirm_abandoned(1, close).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(
+        v.status,
+        Status::Paused {
+            seq: 1,
+            close: pubky_mayfly::close::CloseState::Contested { present: vec![2] }
+        }
+    );
+    assert_eq!(v.committed_hashes(), sim.committed_hashes());
+
+    // Same, but with a quorum of receipts: Carol owed nobody a vote, so the close is invalid.
+    let mut sim = Sim::new(Tally, 3, 3, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    sim.propose(2, "add", serde_json::json!({ "n": 9 }))
+        .unwrap();
+    sim.witnesses_observe();
+    sim.tick(30 * HOUR_MS);
+    let close = sim.propose_abandoned(0, &[2]).unwrap();
+    sim.witnesses_observe();
+    sim.confirm_abandoned(1, close).unwrap();
+    sim.witnesses_observe();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(read_close(&v, close), CloseReading::Dropped);
+
+    // Carol answers Alice's proposal (with a reject) before the close: she was not silent.
+    let mut sim = Sim::new(Tally, 3, 3, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    let l = sim
+        .propose(0, "add", serde_json::json!({ "n": 1 }))
+        .unwrap();
+    sim.witnesses_observe();
+    sim.tick(30 * HOUR_MS);
+    sim.reject(2, l).unwrap();
+    sim.witnesses_observe();
+    sim.tick(HOUR_MS);
+    let close = sim.propose_abandoned(0, &[2]).unwrap();
+    sim.witnesses_observe();
+    sim.confirm_abandoned(1, close).unwrap();
+    sim.witnesses_observe();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(read_close(&v, close), CloseReading::Dropped);
+    // Her reject of the sole valid proposal is obstruction, and the files say so.
+    assert!(v
+        .anomalies
+        .iter()
+        .any(|a| a.kind == AnomalyKind::Obstruction
+            && a.against.as_deref() == Some(sim.parties[2].kid().as_str())));
+}
+
+// ─── Skips (§6.3, §6.4) ───────────────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 32, .. ProptestConfig::default() })]
+
+    /// §6.4: a skip pushes a seq at most `N − 1` rounds. One party walks away under
+    /// `q = N − 1`; when rotation designates them, the others skip them, once each per seq;
+    /// a second skip is not a vote (`InvalidSkip`); and with a witness, an immediate skip is
+    /// premature (§11.3), reported, never a validity question — while a skip after `think_ms`
+    /// is not.
+    #[test]
+    fn skips_are_bounded(n in 4usize..=5, walker in 0usize..5, k in 0usize..=1, patient in any::<bool>()) {
+        let walker = walker % n;
+        let mut sim = Sim::new(Tally, n, k, &["chess.example"], n - 1);
+        for p in 0..n {
+            sim.parties[p].behaviour = if p == walker { Behaviour::WalksAwayAt(1) } else { Behaviour::SkipsEarly };
+        }
+        sim.bootstrap().map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let seq = sim.open.seq;
+        // Two present parties propose, the other present parties refuse both: round 0 dies
+        // without the walker's vote (needs N >= 4 under q = N − 1).
+        let present: Vec<usize> = (0..n).filter(|p| *p != walker).collect();
+        let rounds = sim
+            .play(&SeqPlan {
+                proposers: vec![present[0], present[1]],
+                values: vec![1, 2],
+                choices: vec![Choice::Reject(0); n],
+                passes: 0,
+                silent_wait_ms: if patient { 25 * HOUR_MS } else { 0 },
+            })
+            .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert!(rounds <= 1 + n as u32, "rounds {rounds}");
+
+        let v = verify(&Tally, &sim.inputs_all(), &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(v.committed_hashes(), sim.committed_hashes());
+        prop_assert!(v.head().unwrap().link.payload.round <= n as u32);
+        let skips: Vec<(u64, u32, usize)> = sim.skip_log.iter().copied().filter(|(s, _, _)| *s == seq).collect();
+        prop_assert!(skips.len() < n, "at most N − 1 skips per seq");
+        let premature = v.anomalies.iter().filter(|a| a.kind == AnomalyKind::PrematureSkip).count();
+        prop_assert!(v.anomalies.iter().all(|a| a.kind == AnomalyKind::PrematureSkip), "{:?}", v.anomalies);
+        if k == 1 && !patient {
+            prop_assert_eq!(premature, skips.len(), "{:?}", v.anomalies);
+        } else {
+            prop_assert_eq!(premature, 0, "{:?}", v.anomalies);
+        }
+
+        // A second skip by a party who already skipped at that seq is not a vote.
+        if let Some(&(_, round, s)) = skips.first() {
+            let signer = sim.parties[s].client.clone();
+            sim.forge_reject(s, &signer, seq, round, None);
+            let v2 = verify(&Tally, &sim.inputs_all(), &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+            prop_assert_eq!(v2.committed_hashes(), v.committed_hashes());
+            prop_assert_eq!(&v2.status, &v.status);
+            let kid = sim.parties[s].kid();
+            prop_assert!(
+                v2.anomalies.iter().any(|a| a.kind == AnomalyKind::InvalidSkip && a.against.as_deref() == Some(kid.as_str())),
+                "{:?}", v2.anomalies
+            );
+        }
+    }
+}

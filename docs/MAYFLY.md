@@ -493,9 +493,12 @@ Each `seq` is decided in numbered **rounds**, `0, 1, 2, …`. In round `r` of se
   **not** as a validity condition: if a skip's validity depended on receipts, so would round
   death, and so would which link is committed, and two verifiers with different receipt sets
   would fold different chains. Commitment depends on votes alone (step 3d in §9.2 consults QCs,
-  never death evidence). A skip that arrives in a round where the designated party did propose
-  is an ordinary empty reject: a vote for nothing that kills the round, and **obstruction** if
-  the proposal was valid (§11.3). The residual is therefore a party spending its one skip per
+  never death evidence). An empty reject that arrives in a round where the designated party
+  **acted** — proposed or passed — is not a skip at all but an ordinary vote for nothing: it
+  spends no skip budget and is never premature, since nobody silent was skipped; it kills the
+  round, and is **obstruction** if there was a valid proposal (§11.3). Under `q < N` this is
+  how the remaining `N − q` rejects that kill a passed-on round arrive (§6.4). The residual is
+  therefore a party spending its one skip per
   `seq` — costing the skipped party at most two rounds — and then obstructing in the open, which
   the files prove without any clock.
 - **Entering a round.** An honest party votes in round `r + 1` only after it has seen round `r`
@@ -545,11 +548,21 @@ Consequences:
   are rejected, and rotation moves on. The only way to stop the chain is to reject every valid
   proposal, and a reject of a link the verifier can show was valid is **obstruction**: it counts
   against the rejecter exactly as silence does (§11.3), and makes them the subject of an
-  `abandoned` close.
+  `abandoned` close. Obstruction is judged per round and only when the refused link was the
+  **sole** proposal in that round: with competing proposals, refusing one so that the round
+  ends and rotation decides is what §6.3 permits, and a verifier does not count it. A party
+  who refuses the sole valid proposal in round 0 and again the designated re-proposal in round
+  1 has obstructed twice, in the open.
 - **Quorum mode.** Genesis may set `confirm_quorum: q < N` (votes including the author,
   `q > N/2`). This tolerates parties who are merely offline; it is *not* analysed here for
   dishonest parties, because the locks above rely on every party's vote being needed. Chains
-  with stakes should use unanimity.
+  with stakes should use unanimity. One liveness consequence is worth knowing: round 0 has no
+  skips, and a round with proposals dies only when no link can still reach `q`, so under
+  `q < N` a **silent party keeps round 0 alive** whenever their vote could complete a QC. With
+  `N = 3, q = 2`, two competing proposals and a silent third party leave the `seq` waiting on
+  that party — or on an `abandoned` close naming them — where unanimity would have killed the
+  round at once. With `N ≥ 4` the present parties can still kill it by refusing (each `L` then
+  has `votes(L) + 1 < q`).
 
 Genesis is committed the same way: the initiator proposes link 0 (round 0, no rotation) naming
 every party; each other party confirms it (their confirmation is their acceptance and carries
@@ -1520,6 +1533,15 @@ close is **adjudicated** valid when a quorum of witnesses' receipts show `silenc
 beyond the rules' allowance at the moment the close was observed; a vote by the subject observed
 after that is late and does not void the close. The verifier in §9 adjudicates offline from the
 receipts alone.
+
+**A witness judges only from a complete view.** For every time question the verifier puts to
+the quorum — a close's silence, a recover's delay, a skip's fairness — a witness's answer is
+formed from its receipts of *every* record in the fold that bears on the question: the close
+or skip itself, the proposal that created the obligation, every record by the subject at that
+`seq`, every QC confirmation behind `ready`. If the fold holds such a record and that witness's
+receipt for it is missing, the witness **cannot judge** and counts as silent, never as "did not
+see it". This is what makes the quorum's verdicts monotone in the receipts a verifier holds:
+one with fewer receipts lands on *asserted*, never on the opposite final (§6.8, §11.2).
 
 ### 11.4 What a watchdog proves — and does not
 
