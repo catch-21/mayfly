@@ -31,7 +31,7 @@ Section numbers refer to `docs/MAYFLY.md`.
 ### `Action`
 
 `Confirmed(h)`, `Reproposed { earlier, link }`, `Passed(h)`, `Skipped(h)`,
-`Decision { candidate, round, repropose }`, `MyTurn { round }`,
+`Rejected { link, reason }`, `Decision { candidate, round, repropose }`, `MyTurn { round }`,
 `AwaitingWitnesses { have, of, want }`.
 
 ### `GenesisSpec`

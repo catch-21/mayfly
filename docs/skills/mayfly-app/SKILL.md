@@ -18,6 +18,7 @@ below refer to it. Read the section before touching what it governs.
 | `pubky-mayfly-rules` | Rules modules: `list/1` today. Add new rules here. |
 | `pubky-mayfly-client` | `ChainClient`: the app's whole surface. `Store`/`Signer` traits with `MemoryStore`/`LocalSigner` (tests) and `PubkyStore`/`SessionSigner` (Pubky SDK). |
 | `pubky-mayfly-watchdog` | `Watchdog` (one chain) and `Operator` (many chains, customers, credit). Run it as a service; apps only *name* a watchdog in genesis. |
+| `mayfly-demo` (`crates/demo`) | The worked example: a narrated shopping list on a testnet with a live explorer. Read `src/main.rs` for how an app drives `ChainClient` and a watchdog end to end, and `src/explorer.rs` for how a bystander reads and renders a chain. |
 
 Full API cheat‑sheet: [reference.md](reference.md).
 
@@ -36,8 +37,10 @@ An app never reasons about rounds, votes or files. It does four things:
    proposer after `think_ms`. It is idempotent and never double‑votes.
 3. **Put decisions to the user.** `Action::Decision` is a `close`, `recover` or `witnesses`
    candidate: render it, then `confirm(hash)` or `reject(hash)` (or `repropose`/`pass` if
-   `repropose: true`). `Action::MyTurn { round }`: propose something or `pass()`.
-   `Action::AwaitingWitnesses`: show the watchdog's silence as the reason (§11.2).
+   `repropose: true`; `confirm_abandoned` for an abandoned close). `Action::MyTurn { round }`:
+   propose something or `pass()`. `Action::AwaitingWitnesses`: show the watchdog's silence as
+   the reason (§11.2). `Action::Rejected` means a link in my round was not a valid candidate
+   and I refused it with evidence (§8.2 step 4) — show it; it needs no reply.
 4. **Propose.** `client.propose_body(&Body::Add { .. })` for rules content. Protocol actions have
    their own methods: `propose_close(Agreed|Finished)`, `propose_abandoned(&[subject])` +
    `confirm_abandoned`, `propose_rekey(new_signer)`, `propose_recover(new_signer)`.

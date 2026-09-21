@@ -125,6 +125,16 @@ pub enum Action {
     Passed(Hash),
     /// Skipped a designated proposer silent for `think_ms` on my clock (§6.3, §8.2 step 5).
     Skipped(Hash),
+    /// Rejected a link at the open seq in my round that the fold does not admit as a
+    /// candidate — invalid under the rules, badly signed, or from an ineligible author — with
+    /// the reject as evidence (§8.2 step 4). This spends my vote; the round dies and rotation
+    /// moves on.
+    Rejected {
+        /// The refused link.
+        link: Hash,
+        /// Why, as far as this client can tell.
+        reason: String,
+    },
     /// A candidate an honest client never decides alone — a `close`, `recover` or
     /// `witnesses` link (§6.7, §6.8, §11.2) — or a re-proposal of one. Show it to the user;
     /// then [`ChainClient::confirm`], [`ChainClient::reject`], or, if `repropose`,
@@ -1192,6 +1202,13 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         let designated_now = round >= 1 && designated(&self.chain, open.seq, round, n) == me;
         let mut out = Vec::new();
 
+        // §8.2 step 4: a link in my round that is not a candidate is refused with evidence.
+        if let Some((link, reason)) = self.invalid_in_round(&open, round, me)? {
+            self.write_reject(round, Some(link)).await?;
+            out.push(Action::Rejected { link, reason });
+            return Ok(out);
+        }
+
         if open.dead {
             // The dead round's votes are spent; round `round` has none yet.
             if designated_now {
@@ -1248,6 +1265,63 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             }),
         }
         Ok(out)
+    }
+
+    /// The lowest-hash link at the open seq, in `round`, on the head, by another party, that the
+    /// fold did not admit as a candidate — and why, as far as the rules can say.
+    fn invalid_in_round(
+        &self,
+        open: &OpenView,
+        round: u32,
+        me: PartyIndex,
+    ) -> Result<Option<(Hash, String)>, Error> {
+        let v = self.require_verdict()?;
+        let Some(head) = v.head() else {
+            return Ok(None);
+        };
+        let candidates: BTreeSet<Hash> = open.candidates.iter().map(|c| c.hash).collect();
+        let kids: BTreeMap<String, PartyIndex> = self
+            .genesis
+            .iter()
+            .flat_map(|(_, g)| g.parties.iter().enumerate())
+            .filter_map(|(i, p)| {
+                v.seats
+                    .iter()
+                    .find(|s| s.pubky == p.pubky)
+                    .map(|s| (s.kid.clone(), i))
+            })
+            .collect();
+        let state = self.state()?;
+        let mut found: Option<(Hash, String)> = None;
+        for bytes in &self.inputs.links {
+            let hash = Hash::of(bytes);
+            if candidates.contains(&hash) || found.as_ref().is_some_and(|(h, _)| *h < hash) {
+                continue;
+            }
+            let Ok(l) = fold::decode_link(bytes.clone()) else {
+                continue;
+            };
+            if l.payload.chain != self.chain
+                || l.payload.seq != open.seq
+                || l.payload.round != round
+                || l.payload.prev_hash().ok().flatten() != Some(head.link.hash)
+            {
+                continue;
+            }
+            match kids.get(&l.payload.kid) {
+                Some(author) if *author != me => {}
+                _ => continue,
+            }
+            let reason = match (&state, l.payload.kind()) {
+                (Some(s), Kind::Rules) => match self.rules.apply(s, &l.payload) {
+                    Err(e) => format!("rules: {}", e.0),
+                    Ok(_) => "not a candidate (§9.3): signature, eligibility or state".into(),
+                },
+                _ => "not a candidate (§9.3)".into(),
+            };
+            found = Some((hash, reason));
+        }
+        Ok(found)
     }
 
     /// Skip if the designated proposer of `round` has been silent for `think_ms` on my clock

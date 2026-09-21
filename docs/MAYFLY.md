@@ -323,6 +323,18 @@ canonicalisation problem (signed bytes are stored bytes); `hash = BLAKE3(file by
 same 32 bytes as the homeserver `ETag` and the SSE `content_hash`; and verification in any
 language is split, decode, Ed25519 verify, JSON parse.
 
+**Why not readable JSON on disk.** A generic file browser shows a compact JWS as an opaque
+string, and it is tempting to store `{alg, typ, payload, sig}` with the payload in clear
+instead. That was tried and reverted: the signed bytes become a *substring* of the file, so a
+verifier needs a JSON parser that hands back the exact byte range of `payload` (`JSON.parse`
+does not), or it re-serialises and quietly reintroduces the canonicalisation problem this
+section exists to avoid; the protected header is no longer stored but re-synthesised, so
+verification silently depends on every signer emitting byte-identical header JSON; and the
+format is no longer RFC 7515, so the JOSE library that verifies a Grant cannot verify a record.
+Storage was not the issue (base64url costs about a quarter more than clear JSON). Readability
+is the explorer's job (§14): it decodes header and payload, checks the signature and the hash,
+and shows the raw JWS beside them.
+
 **Hash encoding.** The homeserver writes that hash as quoted, padded, *standard* Base64 in the
 `ETag` header and as unpadded standard Base64 in `content_hash`; payloads write it as unpadded
 **base64url**. Same bits, three spellings. Implementations decode to 32 bytes and compare
@@ -1886,7 +1898,11 @@ Tests use `pubky-testnet::EphemeralTestnet` as the SDK's own tests do.
    `Pubky` verifies from each homeserver using only the declared `path`s; competing proposals
    converge through a dead round; an offline member stalls and resumes; a `recover` moves a
    party to a third folder and the verifier follows it; a tampered mirror is detected.
-3. **Shared list web app** — WASM bindings, delegated grant sign-in, explorer.
+3. **Shared list web app** — WASM bindings, delegated grant sign-in, explorer. *Native first:*
+   `mayfly-demo` is a narrated shopping list on a testnet (three grant sessions, a watchdog,
+   happy and sad paths) with a live explorer page rendering every homeserver's files and the
+   verified chain (§14, demo edition). The web app proper still needs the JS `signJws` binding
+   and a WASM-safe client.
 4. **Chess rules and app** — `shakmaty`, PGN fixtures, time control.
 5. **Watchdog** — service, receipts, L402, stopwatch adjudication in the verifier; chess timeouts
    end to end. *Done, less L402 and chess:* `pubky-mayfly-watchdog` engages, receipts every

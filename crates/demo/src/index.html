@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Mayfly explorer — shopping list demo</title>
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --line:#2a2f3a; --fg:#e6e6e6; --dim:#8b93a7; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --dog:#c084fc; --new:#38bdf8; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 ui-sans-serif, system-ui, sans-serif; }
+  header { display:flex; align-items:baseline; gap:16px; padding:14px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.02em; }
+  header .step { color:var(--dim); }
+  header .status { margin-left:auto; padding:2px 10px; border-radius:999px; border:1px solid var(--line); color:var(--dim); }
+  header .status.final { color:var(--ok); border-color:var(--ok); }
+  main { display:grid; grid-template-columns: 1fr 380px; gap:16px; padding:16px 20px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  section h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 10px; }
+  .chain { display:flex; gap:10px; overflow-x:auto; padding-bottom:6px; align-items:stretch; }
+  .link { min-width:190px; max-width:230px; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:#10131a; position:relative; }
+  .link.provisional { border-style:dashed; }
+  .link.open { border-style:dashed; border-color:var(--warn); background:transparent; }
+  .link .seq { color:var(--dim); font-size:11px; }
+  .link .kind { font-weight:600; margin:2px 0; }
+  .link .by { color:var(--dim); font-size:12px; }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+  .chip { font-size:11px; padding:1px 7px; border-radius:999px; border:1px solid var(--line); color:var(--dim); }
+  .chip.ok { color:var(--ok); border-color:#1f5a35; }
+  .chip.dog { color:var(--dog); border-color:#4c2a70; }
+  .chip.warn { color:var(--warn); border-color:#6b4d0a; }
+  .chip.bad { color:var(--bad); border-color:#6b1f1f; }
+  .arrow { align-self:center; color:var(--dim); }
+  .servers { display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:10px; }
+  .server { border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:#10131a; }
+  .server h3 { margin:0 0 4px; font-size:14px; display:flex; align-items:center; gap:8px; }
+  .server h3 .dot { width:8px; height:8px; border-radius:50%; background:var(--ok); }
+  .server h3 .dot.off { background:var(--bad); }
+  .server .meta { color:var(--dim); font-size:11px; word-break:break-all; }
+  .server .role { margin-left:auto; font-size:11px; color:var(--dim); }
+  .server.watchdog h3 .name { color:var(--dog); }
+  .files { margin:6px 0 0; padding:0; list-style:none; font:12px ui-monospace, SFMono-Regular, Menlo, monospace; max-height:260px; overflow:auto; }
+  .files li { display:flex; gap:8px; padding:1px 4px; margin:0 -4px; border-radius:4px; color:var(--dim); white-space:nowrap; }
+  .files li.record { cursor:pointer; }
+  .files li.record:hover { background:#1c2029; }
+  .files li.selected { background:#1f2a3a; }
+  .files li .what { width:150px; flex:none; color:var(--fg); }
+  .files li.new { color:var(--new); }
+  .files li.new .what { color:var(--new); }
+  .files li .path { overflow:hidden; text-overflow:ellipsis; }
+  .record-panel { font:12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .record-panel .where { color:var(--dim); word-break:break-all; margin-bottom:6px; }
+  .record-panel .checks { display:flex; flex-wrap:wrap; gap:4px; margin:6px 0; }
+  .record-panel pre { margin:6px 0 0; padding:8px; background:#10131a; border:1px solid var(--line); border-radius:6px; overflow:auto; max-height:420px; white-space:pre; }
+  .record-panel .raw { color:var(--dim); word-break:break-all; white-space:pre-wrap; max-height:80px; }
+  .record-panel details summary { cursor:pointer; color:var(--dim); margin-top:6px; }
+  .j-key { color:#93c5fd; } .j-str { color:#fcd34d; } .j-num { color:#86efac; } .j-lit { color:#f9a8d4; }
+  .list li { display:flex; gap:8px; }
+  .list li.ticked { text-decoration:line-through; color:var(--dim); }
+  .log { max-height:420px; overflow:auto; font-size:13px; }
+  .log .entry { border-top:1px solid var(--line); padding:8px 0; }
+  .log .entry:first-child { border-top:none; }
+  .log .entry h4 { margin:0 0 4px; font-size:13px; }
+  .log .entry p { margin:2px 0; color:var(--dim); white-space:pre-wrap; }
+  .log .entry.current h4 { color:var(--new); }
+  .anom li { color:var(--warn); }
+  .empty { color:var(--dim); font-style:italic; }
+  .right { display:flex; flex-direction:column; gap:16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mayfly explorer</h1>
+  <span class="step" id="step">waiting for the demo…</span>
+  <span class="status" id="status"></span>
+</header>
+<main>
+  <div class="left" style="display:flex;flex-direction:column;gap:16px">
+    <section>
+      <h2>The chain, as verified from the files</h2>
+      <div class="chain" id="chain"><span class="empty">no genesis yet</span></div>
+    </section>
+    <section>
+      <h2>Homeservers</h2>
+      <div class="servers" id="servers"></div>
+    </section>
+  </div>
+  <div class="right">
+    <section>
+      <h2>The list</h2>
+      <ul class="list" id="items"><li class="empty">empty</li></ul>
+    </section>
+    <section>
+      <h2>Evidence</h2>
+      <ul class="anom" id="anomalies"><li class="empty">nothing to report</li></ul>
+    </section>
+    <section>
+      <h2>Record</h2>
+      <div class="record-panel" id="record"><span class="empty">click a file on a homeserver to decode it</span></div>
+    </section>
+    <section>
+      <h2>Story so far</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
+</main>
+<script>
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const chip = (t, cls='') => `<span class="chip ${cls}">${esc(t)}</span>`;
+
+function renderChain(c) {
+  const el = document.getElementById('chain');
+  if (!c) { el.innerHTML = '<span class="empty">no genesis yet</span>'; return; }
+  let html = '';
+  c.committed.forEach((l, i) => {
+    if (i) html += '<span class="arrow">→</span>';
+    const w = l.witnessed[1] ? chip(`witnessed ${l.witnessed[0]}/${l.witnessed[1]}`, l.witnessed[0] ? 'dog' : 'warn') : '';
+    html += `<div class="link ${l.is_final ? '' : 'provisional'}">
+      <div class="seq">#${l.seq}${l.round ? ' · round ' + l.round : ''} · ${esc(l.h16)}</div>
+      <div class="kind">${esc(l.summary)}</div>
+      <div class="by">by ${esc(l.author)}</div>
+      <div class="chips">${l.confirmers.map(n => chip('✓ ' + n, 'ok')).join('')}${w}${chip(l.is_final ? 'final' : 'head', l.is_final ? '' : 'warn')}</div>
+    </div>`;
+  });
+  if (c.open) {
+    const o = c.open;
+    html += '<span class="arrow">→</span>';
+    const cands = o.candidates.map(k => `<div style="margin-top:4px">${esc(k.author)}: <b>${esc(k.kind)}</b> <span class="seq">r${k.round} · ${esc(k.h16)}</span> ${chip(k.votes + ' vote' + (k.votes === 1 ? '' : 's'), k.votes ? 'ok' : '')}</div>`).join('');
+    const voters = o.voters.map(([r, ps]) => `<div class="seq">round ${r}: ${ps.length ? ps.map(esc).join(', ') : 'nobody'} voted</div>`).join('');
+    const rej = o.rejects.map(r => chip(r, 'bad')).join('');
+    html += `<div class="link open">
+      <div class="seq">#${o.seq} · open · round ${o.round}${o.dead ? ' <b style="color:var(--bad)">dead</b>' : ''}</div>
+      ${cands || '<div class="empty">nothing proposed</div>'}
+      ${voters}<div class="chips">${rej}</div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+let selected = null; // { pubky, path }
+let latest = null;
+
+function renderServers(hs, step) {
+  document.getElementById('servers').innerHTML = hs.map((h, hi) => `
+    <div class="server ${h.role}">
+      <h3><span class="dot ${h.online ? '' : 'off'}"></span><span class="name">${esc(h.name)}</span><span class="role">${h.role}${h.online ? '' : ' · offline'}</span></h3>
+      <div class="meta">pubky://${esc(h.pubky)}${esc(h.folder)}</div>
+      <ul class="files">${h.files.length ? h.files.map((f, fi) => {
+        const sel = selected && selected.pubky === h.pubky && selected.path === f.path;
+        return `<li class="${f.step === step ? 'new' : ''} ${f.record ? 'record' : ''} ${sel ? 'selected' : ''}" data-h="${hi}" data-f="${fi}"><span class="what">${esc(f.what)}</span><span class="path" title="${esc(f.path)}">${esc(f.path)}</span></li>`;
+      }).join('') : '<li class="empty">empty</li>'}</ul>
+    </div>`).join('');
+  document.querySelectorAll('.files li.record').forEach(li => li.addEventListener('click', () => {
+    const h = latest.homeservers[+li.dataset.h], f = h.files[+li.dataset.f];
+    selected = { pubky: h.pubky, path: f.path };
+    renderServers(latest.homeservers, latest.step);
+    renderRecord();
+  }));
+}
+
+// JSON pretty-printer with light highlighting; embedded records are already unpacked server-side.
+function hl(v, indent = 0) {
+  const pad = '  '.repeat(indent), pad1 = '  '.repeat(indent + 1);
+  if (v === null || typeof v === 'boolean') return `<span class="j-lit">${v}</span>`;
+  if (typeof v === 'number') return `<span class="j-num">${v}</span>`;
+  if (typeof v === 'string') return `<span class="j-str">"${esc(v)}"</span>`;
+  if (Array.isArray(v)) return v.length ? `[\n${v.map(x => pad1 + hl(x, indent + 1)).join(',\n')}\n${pad}]` : '[]';
+  const keys = Object.keys(v);
+  return keys.length ? `{\n${keys.map(k => `${pad1}<span class="j-key">"${esc(k)}"</span>: ${hl(v[k], indent + 1)}`).join(',\n')}\n${pad}}` : '{}';
+}
+
+function renderRecord() {
+  const el = document.getElementById('record');
+  if (!selected || !latest) { el.innerHTML = '<span class="empty">click a file on a homeserver to decode it</span>'; return; }
+  const h = latest.homeservers.find(x => x.pubky === selected.pubky);
+  const f = h && h.files.find(x => x.path === selected.path);
+  if (!f || !f.record) { el.innerHTML = '<span class="empty">that file is gone</span>'; return; }
+  const r = f.record;
+  const tri = (v, yes, no) => v == null ? '' : chip(v ? yes : no, v ? 'ok' : 'bad');
+  el.innerHTML = `
+    <div class="where">${esc(h.name)} · ${esc(f.what)}<br>${esc(f.path)}</div>
+    <div class="checks">
+      ${r.typ ? chip(r.typ) : ''}
+      ${chip('hash ' + f.h16)}
+      ${tri(r.signature_ok, 'signature verifies under ' + (r.claimed_key || '').slice(0, 8) + '…', 'signature does NOT verify under claimed key')}
+      ${tri(r.hash_matches_etag, 'bytes match ETag', 'bytes do NOT match ETag')}
+      ${tri(r.hash_matches_name, 'bytes match file name', 'bytes do NOT match file name')}
+      ${r.error ? chip(r.error, 'bad') : ''}
+    </div>
+    ${r.error ? '' : `<pre>${hl(r.payload)}</pre>`}
+    <details><summary>raw JWS (${f.bytes} bytes)</summary><pre class="raw">${esc(r.raw)}</pre></details>`;
+}
+
+function renderRight(c, log, step) {
+  const items = document.getElementById('items');
+  if (!c || !c.items.length) items.innerHTML = '<li class="empty">empty</li>';
+  else items.innerHTML = c.items.map(i => `<li class="${i.ticked ? 'ticked' : ''}"><span>${i.ticked ? '☑' : '☐'}</span><span>${esc(i.text)}</span></li>`).join('')
+    + (c.archived ? '<li class="empty">archived</li>' : '');
+  const an = document.getElementById('anomalies');
+  const rows = [];
+  if (c) {
+    c.suspects.forEach(([who, file]) => rows.push(`<li>${esc(who)} holds a file whose bytes do not match its name: ${esc(file)}</li>`));
+    c.anomalies.forEach(a => rows.push(`<li>${esc(a.kind)} against ${esc(a.against)}${a.seq != null ? ' at seq ' + a.seq : ''} — evidence ${a.evidence.map(esc).join(', ')}</li>`));
+    c.engaged.forEach(([who, until]) => rows.push(`<li style="color:var(--dog)">${esc(who)} is engaged as witness until ${new Date(until * 1000).toLocaleTimeString()}</li>`));
+  }
+  an.innerHTML = rows.length ? rows.join('') : '<li class="empty">nothing to report</li>';
+  const lg = document.getElementById('log');
+  lg.innerHTML = [...log].reverse().map(e => `<div class="entry ${e.n === step ? 'current' : ''}"><h4>Step ${e.n}: ${esc(e.title)}</h4>${e.lines.map(l => `<p>${esc(l)}</p>`).join('')}</div>`).join('');
+}
+
+async function tick() {
+  try {
+    const s = await (await fetch('/state.json', { cache: 'no-store' })).json();
+    latest = s;
+    document.getElementById('step').textContent = s.step ? `Step ${s.step}: ${s.title}` : 'waiting for the demo…';
+    const st = document.getElementById('status');
+    st.textContent = s.chain ? s.chain.status : '';
+    st.className = 'status' + (s.chain && s.chain.is_final ? ' final' : '');
+    renderChain(s.chain);
+    renderServers(s.homeservers, s.step);
+    renderRight(s.chain, s.log, s.step);
+    renderRecord();
+  } catch (e) { /* the demo is not up yet */ }
+}
+tick(); setInterval(tick, 800);
+</script>
+</body>
+</html>

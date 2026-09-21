@@ -6,12 +6,45 @@ use pubky::errors::RequestError;
 use pubky::{GrantCredential, Pubky, PubkySession, PublicKey};
 use pubky_common::auth::grant::GrantClaims;
 
+use pubky_mayfly::hash::Hash;
+
 use crate::signer::Signer;
 use crate::store::{Listed, Store};
 use crate::Error;
 
 fn sdk(e: pubky::Error) -> Error {
     Error::Store(e.to_string())
+}
+
+/// A failure worth retrying: the transport (a dropped connection, a resolver hiccup) or the
+/// server itself (5xx). A 4xx or a malformed response is final.
+fn transient(e: &pubky::Error) -> bool {
+    match e {
+        pubky::Error::Request(RequestError::Transport(_)) => true,
+        pubky::Error::Request(RequestError::Server { status, .. }) => status.is_server_error(),
+        _ => false,
+    }
+}
+
+/// Run `op` up to four times, backing off 200 ms, 600 ms, 1.8 s between transient failures.
+/// Storage is remote and shared; a client that panics on one lost request is not a client.
+async fn retrying<T, F, Fut>(mut op: F) -> Result<T, pubky::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, pubky::Error>>,
+{
+    let mut delay = std::time::Duration::from_millis(200);
+    let mut attempt = 0;
+    loop {
+        match op().await {
+            Err(e) if transient(&e) && attempt < 3 => {
+                attempt += 1;
+                tokio::time::sleep(delay).await;
+                delay *= 3;
+            }
+            other => return other,
+        }
+    }
 }
 
 /// Storage over the Pubky SDK. Reads are public (anyone's `/pub/`); writes go through the
@@ -70,11 +103,15 @@ impl Store for PubkyStore {
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
-            let mut builder = storage.list((&pk, prefix)).map_err(sdk)?.limit(1000);
-            if let Some(c) = &cursor {
-                builder = builder.cursor(c);
-            }
-            let page = match builder.send().await {
+            let page = retrying(|| async {
+                let mut builder = storage.list((&pk, prefix))?.limit(1000);
+                if let Some(c) = &cursor {
+                    builder = builder.cursor(c);
+                }
+                builder.send().await
+            })
+            .await;
+            let page = match page {
                 Ok(page) => page,
                 // A folder that does not exist yet lists as nothing.
                 Err(pubky::Error::Request(RequestError::Server { status, .. }))
@@ -97,12 +134,31 @@ impl Store for PubkyStore {
             }
             cursor = out.last().map(|l| format!("pubky://{}{}", l.owner, l.path));
         }
+        // A listing carries no hashes, but every file's `ETag` is its BLAKE3 (§2, §6), so a
+        // HEAD per entry tells a client which cached files were overwritten in place (§7) —
+        // the tampered-mirror case — without fetching them. Done concurrently, in batches.
+        for chunk in out.chunks_mut(8) {
+            let stats = futures_util::future::join_all(
+                chunk
+                    .iter()
+                    .map(|l| retrying(|| storage.stats((&pk, l.path.as_str())))),
+            )
+            .await;
+            for (l, s) in chunk.iter_mut().zip(stats) {
+                l.content_hash = s
+                    .ok()
+                    .flatten()
+                    .and_then(|s| s.etag)
+                    .and_then(|e| Hash::parse(&e).ok());
+            }
+        }
         Ok(out)
     }
 
     async fn get(&self, owner: &str, path: &str) -> Result<Option<Vec<u8>>, Error> {
         let pk = owner_key(owner)?;
-        match self.pubky.public_storage().get((&pk, path)).await {
+        let storage = self.pubky.public_storage();
+        match retrying(|| storage.get((&pk, path))).await {
             Ok(resp) => Ok(Some(
                 resp.bytes()
                     .await
@@ -123,7 +179,10 @@ impl Store for PubkyStore {
             .session
             .as_ref()
             .ok_or_else(|| Error::Store("read-only store".into()))?;
-        session.storage().put(path, bytes).await.map_err(sdk)?;
+        let storage = session.storage();
+        retrying(|| storage.put(path, bytes.clone()))
+            .await
+            .map_err(sdk)?;
         Ok(())
     }
 
@@ -132,7 +191,8 @@ impl Store for PubkyStore {
             .session
             .as_ref()
             .ok_or_else(|| Error::Store("read-only store".into()))?;
-        session.storage().delete(path).await.map_err(sdk)?;
+        let storage = session.storage();
+        retrying(|| storage.delete(path)).await.map_err(sdk)?;
         Ok(())
     }
 }
