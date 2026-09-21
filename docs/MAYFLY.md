@@ -612,7 +612,9 @@ never be replayed across chains.
 ```
 
 Only the initiator's `kid` (and Grant, in the link's `grant` field) is known at genesis; the
-others arrive in their confirmations. Roles are rules-defined strings.
+others arrive in their confirmations. Roles are rules-defined strings. A party entry may also
+carry `"path": "/pub/<app>/mayfly/"`, the initiator's guess at where that party will write —
+a discovery hint for their confirmation before link 1 embeds it (§9.1), never checked.
 
 **A genesis confirmation is key discovery as well as a vote.** Under `q < N` genesis may commit
 before every party has confirmed; a party whose confirmation arrives afterwards is no longer
@@ -1039,6 +1041,12 @@ embedded in link 1, or from the confirmers' own storage while link 1 does not ye
 party's declared `path` (§7), then reads as much of those folders as is reachable. A party's
 `recover` may move their `path`; the verifier reads every folder a party has declared, in
 `seq` order.
+
+Before link 1 exists a confirmer's folder is not yet in the chain, so it has to come from
+outside it: the genesis `parties[]` entries carry an optional `path` **hint** — the folder the
+initiator expects that party to write to, usually the app they were invited through — and a
+client may also be told a folder out of band (the invite link, §8.1). Hints are discovery only:
+the `path` in the party's own confirmation is what the verifier checks and follows.
 
 What each source contributes is deliberately layered. **One party's mirrored links alone** prove
 every committed link except the head: each link embeds the QC (and any witness receipts)
@@ -1832,7 +1840,10 @@ Required (phase 0, before the core crate can be exercised end to end):
 - **`GrantCredential::sign_jws(typ, claims) -> String`** (Rust) and `session.grant.signJws(typ,
   claims)` (JS), dispatching to the local keypair or the delegated browser signer. Also expose the
   Grant JWS (`grant.grantJws`) so it can be embedded in genesis and `rekey` records. Both are thin
-  wrappers over existing `pub(crate)` code in `pubky-sdk/src/actors/auth/grant/`.
+  wrappers over existing `pub(crate)` code in `pubky-sdk/src/actors/auth/grant/`. *Done in
+  Rust:* `GrantCredential::{sign_jws, grant_jws, client_public_key}` and the same on
+  `GrantSessionView`, plus `GrantSessionView::credential()`; `sign_jws` refuses the `pubky-*`
+  namespace. The JS binding is still to do.
 - **Homeserver `typ` check — nothing to do.** Verified in
   `pubky-homeserver/src/client_server/auth/grant/crypto/pop_verifier.rs`: the verifier already
   rejects any header `typ` other than `pubky-pop`. The domain separation this design relies on

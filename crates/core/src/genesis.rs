@@ -55,6 +55,11 @@ pub struct Party {
     /// Rules-defined role, e.g. `white`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Discovery hint: where the initiator expects this party's records (`/pub/<app>/mayfly/`),
+    /// so their genesis confirmation can be found before link 1 embeds it (§9.1). The `path`
+    /// in the party's own confirmation is authoritative; this is never checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// One witness as named at genesis.

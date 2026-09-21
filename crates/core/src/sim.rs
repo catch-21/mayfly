@@ -699,6 +699,7 @@ impl<R: Rules> Sim<R> {
                     pubky: p.pubky(),
                     kid: (i == 0).then(|| p.kid()),
                     role: None,
+                    path: Some(p.path.clone()),
                 })
                 .collect(),
             nonce: b64url(&pubky_common::crypto::random_bytes::<16>()),

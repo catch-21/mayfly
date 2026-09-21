@@ -188,6 +188,39 @@ pub enum AnomalyKind {
     WitnessEquivocation,
 }
 
+/// A valid candidate at the open seq.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCandidate {
+    /// The link.
+    pub hash: Hash,
+    /// Its author.
+    pub author: PartyIndex,
+    /// The round it was proposed in.
+    pub round: u32,
+    /// Its `state` field, which a confirmer repeats.
+    pub state: String,
+    /// Its `kind`.
+    pub kind: String,
+    /// Distinct parties who voted for it in its round.
+    pub votes: usize,
+}
+
+/// The open seq as the fold left it — what a client needs to cast its next vote (§9.3): the
+/// round it is in, whether that round is dead, what is proposed, and who has voted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenView {
+    /// The open seq.
+    pub seq: u64,
+    /// Highest round with any vote; `0` if none.
+    pub round: u32,
+    /// Whether that round is dead in the files (§6.4).
+    pub dead: bool,
+    /// Every valid candidate at this seq.
+    pub candidates: Vec<OpenCandidate>,
+    /// Parties who have voted, per round.
+    pub voters: BTreeMap<u32, Vec<PartyIndex>>,
+}
+
 /// The fold's output.
 #[derive(Debug, Clone)]
 pub struct Verdict {
@@ -197,6 +230,8 @@ pub struct Verdict {
     pub committed: Vec<Committed>,
     /// Where the chain stands.
     pub status: Status,
+    /// The open seq, when the chain is ongoing or stalled.
+    pub open: Option<OpenView>,
     /// Every seat established at the head, in genesis order (unseated parties omitted).
     pub seats: Vec<Seat>,
     /// Every witness engaged at the head.
@@ -221,6 +256,87 @@ impl Verdict {
     /// Is the status final — a closed or adjudicated-abandoned chain?
     pub fn is_final(&self) -> bool {
         matches!(self.status, Status::Closed(_) | Status::Abandoned { .. })
+    }
+
+    /// The genesis body, once genesis has committed.
+    pub fn genesis(&self) -> Option<Genesis> {
+        let g = self.committed.first()?;
+        serde_json::from_value(g.link.payload.body.clone()).ok()
+    }
+
+    /// The party index of `pubky` in genesis order.
+    pub fn party_index(&self, pubky: &str) -> Option<PartyIndex> {
+        self.genesis()?
+            .parties
+            .iter()
+            .position(|p| p.pubky == pubky)
+    }
+}
+
+/// Rebuild the rules state at the head of a verdict, the way the fold did: `init` once genesis
+/// (and, if wanted, every reveal) is in, then `apply` for each rules link. `None` while the
+/// rules have not initialised.
+pub fn replay_state<R: Rules>(rules: &R, verdict: &Verdict) -> Result<Option<R::State>, Error> {
+    let Some(genesis_link) = verdict.committed.first() else {
+        return Ok(None);
+    };
+    let genesis: Genesis = serde_json::from_value(genesis_link.payload_body())
+        .map_err(|e| Error::Genesis(format!("body: {e}")))?;
+    let confirmations: Vec<Confirmation> =
+        genesis_link.qc.iter().map(|c| c.payload.clone()).collect();
+    let n = genesis.parties.len();
+    let mut state = if rules.wants_reveals(&genesis) {
+        None
+    } else {
+        Some(
+            rules
+                .init(&genesis, &confirmations, &[])
+                .map_err(|e| Error::Rules(e.0))?,
+        )
+    };
+    let mut revealed: BTreeMap<PartyIndex, Vec<u8>> = BTreeMap::new();
+    for c in &verdict.committed[1..] {
+        match c.link.payload.kind() {
+            Kind::Rules => {
+                let Some(s) = state.as_ref() else {
+                    return Err(Error::Rules("rules link before init".into()));
+                };
+                state = Some(
+                    rules
+                        .apply(s, &c.link.payload)
+                        .map_err(|e| Error::Rules(e.0))?,
+                );
+            }
+            Kind::Reveal => {
+                let body: RevealBody = serde_json::from_value(c.link.payload.body.clone())
+                    .map_err(|e| Error::Payload(e.to_string()))?;
+                let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(&body.nonce)
+                    .map_err(|e| Error::Payload(e.to_string()))?;
+                revealed.insert(c.author, nonce);
+                if (1..n).all(|p| revealed.contains_key(&p)) {
+                    let mut nonces = vec![base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(&genesis.nonce)
+                        .map_err(|e| Error::Genesis(e.to_string()))?];
+                    for p in 1..n {
+                        nonces.push(revealed[&p].clone());
+                    }
+                    state = Some(
+                        rules
+                            .init(&genesis, &confirmations, &nonces)
+                            .map_err(|e| Error::Rules(e.0))?,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(state)
+}
+
+impl Committed {
+    fn payload_body(&self) -> serde_json::Value {
+        self.link.payload.body.clone()
     }
 }
 
@@ -434,6 +550,7 @@ struct Fold<'a, R: Rules> {
     committed: Vec<Committed>,
     recoveries: Vec<Recovery>,
     status: Status,
+    open: Option<OpenView>,
     anomalies: Vec<Anomaly>,
 }
 
@@ -614,6 +731,7 @@ impl<'a, R: Rules> Fold<'a, R> {
             committed: Vec::new(),
             recoveries: Vec::new(),
             status: Status::Ongoing,
+            open: None,
             anomalies,
         };
         fold.keys_seen
@@ -2179,16 +2297,42 @@ impl<'a, R: Rules> Fold<'a, R> {
 
     /// Step 3d, none: the next seq is open (no votes yet) or stalled (votes, no QC).
     fn stall(&mut self, seq: u64, view: &SeqView<R::State>) {
-        if seq > 0 && view.rounds.values().all(|v| v.by_party.is_empty()) {
-            self.status = Status::Ongoing;
-            return;
-        }
         let round = view.rounds.keys().next_back().copied().unwrap_or(0);
         let (dead, voters) = view
             .rounds
             .get(&round)
             .map(|v| (v.is_dead(self.n, self.q), v.voters()))
             .unwrap_or((false, BTreeSet::new()));
+        self.open = Some(OpenView {
+            seq,
+            round,
+            dead,
+            candidates: view
+                .candidates
+                .iter()
+                .map(|c| OpenCandidate {
+                    hash: c.link.hash,
+                    author: c.author,
+                    round: c.link.payload.round,
+                    state: c.link.payload.state.clone(),
+                    kind: c.link.payload.kind.clone(),
+                    votes: view
+                        .rounds
+                        .get(&c.link.payload.round)
+                        .map(|v| v.votes_for(&c.link.hash))
+                        .unwrap_or(0),
+                })
+                .collect(),
+            voters: view
+                .rounds
+                .iter()
+                .map(|(r, v)| (*r, v.voters().into_iter().collect()))
+                .collect(),
+        });
+        if seq > 0 && view.rounds.values().all(|v| v.by_party.is_empty()) {
+            self.status = Status::Ongoing;
+            return;
+        }
         let awaiting: Vec<PartyIndex> = (0..self.n)
             .filter(|p| self.seats[*p].is_some() && !voters.contains(p))
             .collect();
@@ -2336,6 +2480,7 @@ impl<'a, R: Rules> Fold<'a, R> {
             chain: self.chain,
             committed: self.committed,
             status: self.status,
+            open: self.open,
             seats: self.seats.into_iter().flatten().collect(),
             engaged: self.engaged,
             recoveries: self.recoveries,
