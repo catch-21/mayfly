@@ -129,6 +129,20 @@ impl ChainId {
         Self(String::new())
     }
 
+    /// Parse an id from a file name or URL segment: 26 Crockford Base32 characters.
+    pub fn parse(s: &str) -> Result<Self, Error> {
+        let ok = s.len() == 26
+            && s.chars()
+                .all(|c| c.is_ascii_digit() || (c.is_ascii_uppercase() && !"ILOU".contains(c)));
+        if ok {
+            Ok(Self(s.to_string()))
+        } else {
+            Err(Error::Payload(format!(
+                "chain id {s:?} is not 26 Crockford characters"
+            )))
+        }
+    }
+
     /// True for the genesis placeholder.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -177,6 +191,14 @@ mod tests {
             .as_str()
             .chars()
             .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn chain_id_parses_what_it_derives() {
+        let id = ChainId::derive(b"genesis");
+        assert_eq!(ChainId::parse(id.as_str()).unwrap(), id);
+        assert!(ChainId::parse("not-a-chain-id").is_err());
+        assert!(ChainId::parse(&id.as_str().to_lowercase()).is_err());
     }
 
     #[test]

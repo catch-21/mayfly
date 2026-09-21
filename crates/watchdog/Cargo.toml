@@ -1,0 +1,18 @@
+[package]
+name = "pubky-mayfly-watchdog"
+description = "Mayfly watchdog: engagement, one signed receipt per observed record in causal order, consistency flags, mirror tier."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pubky-mayfly = { path = "../core" }
+pubky-mayfly-client = { path = "../client" }
+pubky-common.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time", "macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+pubky-testnet.workspace = true

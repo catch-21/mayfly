@@ -878,8 +878,8 @@ Per party, under their app folder:
     00000007-<h16>.jws                        receipt
     revoked-<kid>-<h16>.jws                   receipt of a party's keys/<kid>.revoked.jws (no seq, §11.3)
     mirror/{links,confirms,rejects}/...       `mirror` tier only: byte-for-byte copies (§11.2, §11.5)
-  index/active/<chain_id>                     empty marker files for UI listing (optional)
-  index/finished/<chain_id>
+  index/active/<chain_id>                     marker: body is the chain URL I joined through; UI listing,
+  index/finished/<chain_id>                   and the request a credited watchdog acts on (§11.2)
 ```
 
 `<h16>` is the first sixteen Crockford Base32 characters (80 bits) of the file's own hash for
@@ -1091,8 +1091,9 @@ reject a committed prefix.
    witness/<chain_id>/engage/<kid>.jws, and every receipts/<kid>/engage.jws mirrored by a party
    — verify each embedded Grant under the witness pubky with cnf == kid (§11.2), check the
    invoice, if any, names this chain_id, and establish each engagement's key with its `until`;
-   conflicting `until`s for one pubky are an equivocation anomaly and the later governs
-   (§11.2). An engagement with no verifiable engage.jws contributes nothing. Witnesses seated
+   of several engagements for one pubky the later `until` governs (§11.2) — renewal is the
+   normal shape, and files alone cannot order them. An engagement with no verifiable
+   engage.jws contributes nothing. Witnesses seated
    by a `witnesses` link are established in step 3f when that link commits — never prefetched,
    since whether it committed is decided in the fold — and their later rotations are found the
    same way from that point.
@@ -1371,10 +1372,14 @@ signed statements about time), but from `until` the witness is no longer *engage
 count toward the witness quorum below, and a chain that still wants it re-engages (a new
 `engage.jws` with a later `until`) before the old one lapses. The verifier reports the gap.
 Two engagements by the same witness pubky for the same chain are read as: the one with the
-**later `until` governs going forward**; an earlier `until` published later is an
-**equivocation** anomaly against the witness and cannot un-engage receipts already issued or
-shrink the window in which they counted. A witness withdraws honestly by letting `until` pass,
-not by rewriting it.
+**later `until` governs going forward**. Renewal therefore never needs the parties to do
+anything, and the verifier attaches no anomaly to it: from files alone nobody can tell which of
+two engagements was published first. A watchdog that *replaces* its current `engage.jws` with
+an earlier `until` is caught the way a deleted receipt is (§11.6): every party mirrors the
+engagement it saw (`receipts/<kid>/engage.jws`, §7), so the longer window survives on their
+storage, signed by the watchdog, and it cannot un-engage receipts already issued or shrink the
+window in which they counted. A witness withdraws honestly by letting `until` pass, not by
+rewriting it.
 
 **Witnessing never gates the chain.** Earlier drafts let genesis mark a witness *required*, so
 that no link could be proposed until that witness had receipted the previous one. Three
@@ -1479,6 +1484,42 @@ rejects an `engage.jws` whose invoice does not name the chain it is engaging. Wh
 still does not prove is *who* paid, which is fine — the point is that the watchdog was paid to
 watch *this* chain, so that its incentive to be honest (a public key with a public track record,
 and future business) is legible.
+
+**Credit, and how a watchdog learns of a chain.** Paying per chain puts a payment step in the
+middle of "start a game" and leaves the counterparty confirming a genesis whose witness has not
+yet appeared. The recommended deployment settles once, in advance, and lets the watchdog find
+its own work:
+
+- A customer buys **watch-time** from a watchdog — so many chain-days, at a tier — by any means
+  (L402 is the natural one), and their app remembers the watchdog's pubky. Time is the unit
+  because it is the one the protocol already has (`until`) and the one nobody else can spend:
+  records and bytes are partly under the opponent's control, and a griefer who could burn a
+  party's witness by burning rounds would do so precisely before a contested close. The
+  `mirror` tier adds a byte budget, already bounded by `max_body_bytes × records`.
+- Nobody asks the watchdog to watch. A party's client writes `index/active/<chain_id>` under
+  its own protocol folder as a matter of course (§7), with the chain URL as its body. The
+  watchdog treats each customer's `/pub/` as its work queue — SSE on `…/mayfly/index/`, or a
+  listing — reads genesis at the URL, and if genesis names it and the customer's credit covers
+  it, publishes `engage.jws` with `until` a fixed engagement length ahead. Typically this
+  lands before the invite has gone out, so the counterparty reviews a genesis whose witness is
+  already engaged. A party who joins writes their own marker, so a party's own nominated
+  watchdog engages the same way — the §11.4 default of one witness per party, for free.
+- Several parties to one chain may be customers of the same watchdog. It engages once and
+  charges one of them: a customer it watches for free if there is one, else the chain's
+  initiator, else the first by pubky, falling through to the next if the first has no credit.
+- While credit remains, the watchdog re-engages with a later `until` before the current one
+  lapses; nobody has to remember to renew. When the marker moves to `index/finished/` (§8.4),
+  or the credit is spent, it stops renewing and the engagement lapses honestly. The fold
+  reports the gap; a top-up does not revive a lapsed engagement — a new one is a new
+  `engage.jws`.
+- A watchdog may watch some pubkies **for free**: its operator's own, a demonstration, a test
+  suite. Nothing in the record distinguishes a free engagement; `payment` is simply absent.
+
+What this gives up is the per-chain legibility of "paid to watch *this* chain" in the record;
+what remains provable is what mattered — the engagement and every receipt under it — and a
+watchdog's reputation was always going to rest on receipts delivered, not on invoices.
+`payment` stays optional; a credit-backed engagement omits it or carries whatever voucher the
+watchdog chooses to sign.
 
 ### 11.3 Receipts and the stopwatch
 
@@ -1643,6 +1684,7 @@ led to `required`, and to three reviews' worth of freezes — but to make every 
 | Never receipts (dark) | Every link shows *witnessed 0/k* for that witness while other witnesses, or the parties' own records, show the chain moving | The public `engage.jws` (it agreed to watch, and was paid) beside the records it never receipted; other witnesses' receipts of the same records |
 | Receipts selectively (skips one party's records) | Per-record receipts have gaps that correlate with a signer | The signer's records exist on their homeserver, mirrored by the counterparties, with no receipt; other witnesses receipted them |
 | Issues a receipt, then deletes it | The receipt is on every party's `receipts/<kid>/` mirror and is missing from `witness/` | The mirrored receipt, signed by the watchdog's own key |
+| Shrinks its engagement (replaces `engage.jws` with an earlier `until`) | The party's `receipts/<kid>/engage.jws` mirror carries a later `until` than the watchdog's current `witness/<chain_id>/engage.jws` | Both engagements, signed by the watchdog's own key |
 | Lies about time | Its `observed_at` differs from other witnesses' by more than a polling interval, or places a record before its `prev` QC | Two signed receipts for the same record that disagree; a receipt whose time contradicts causal order |
 | Adjudicates falsely (signs receipts that make a present party look silent) | The subject's own records, receipted by other witnesses or mirrored by the parties, fall inside the "silent" window | The subject's signed records beside the watchdog's receipts |
 | `mirror` tier drops or alters a record | The mirror's bytes differ from the parties' copies, or are absent | The parties' copies, with the link hash pinned in the successor's `prev` |
@@ -1799,7 +1841,7 @@ mayfly/
   rules/         pubky-mayfly-rules    list/1, chess/1 (shakmaty), document/1
   client/        pubky-mayfly-client   storage layout, propose/confirm/reject/mirror, SSE sync,
                                           rekey, watchdog engagement, verify(url)
-  watchdog/      mayfly-watchdog       witness service + L402
+  watchdog/      pubky-mayfly-watchdog witness service + L402
   cli/           mayfly-cli            create/join/append/confirm/verify from the terminal
   bindings/js/   @mayfly/*             wasm-bindgen wrappers and the explorer
 ```
@@ -1830,7 +1872,13 @@ Tests use `pubky-testnet::EphemeralTestnet` as the SDK's own tests do.
 3. **Shared list web app** — WASM bindings, delegated grant sign-in, explorer.
 4. **Chess rules and app** — `shakmaty`, PGN fixtures, time control.
 5. **Watchdog** — service, receipts, L402, stopwatch adjudication in the verifier; chess timeouts
-   end to end.
+   end to end. *Done, less L402 and chess:* `pubky-mayfly-watchdog` engages, receipts every
+   record in causal order with the §11.3 consistency flag, keeps the `mirror` tier, and stops
+   at `until`; an abandoned close goes from asserted to adjudicated on its receipts alone, over
+   the in-memory store and on a homeserver. Parties find a genesis-named witness from its
+   `/pub/` and mirror its `engage.jws` beside its receipts (§7). Its `Operator` runs the
+   credit deployment of §11.2: customers (free or prepaid in watch-time), engagement from the
+   parties' `index/active/` markers, renewal while credit lasts, lapse on `index/finished/`.
 6. **Agreed document** — rules and redline explorer plugin.
 
 ### 16.3 SDK changes

@@ -15,7 +15,9 @@ use serde_json::{json, Value};
 use pubky_mayfly::fold::{self, Config, Inputs, OpenView, Verdict};
 use pubky_mayfly::genesis::{self, Genesis};
 use pubky_mayfly::hash::{ChainId, Hash};
-use pubky_mayfly::record::{CloseBody, CloseReason, Confirmation, Link, Receipt, Reject, Signed};
+use pubky_mayfly::record::{
+    CloseBody, CloseReason, Confirmation, Engagement, Link, Receipt, Reject, Signed,
+};
 use pubky_mayfly::rules::{state_hash, PartyIndex, Rules};
 use pubky_mayfly::vote::designated;
 use pubky_mayfly::{typ, PROTOCOL_VERSION};
@@ -112,6 +114,8 @@ pub struct ChainClient<R: Rules, S: Store, K: Signer> {
     store: S,
     signer: K,
     chain: ChainId,
+    /// The folder the chain was opened from (the chain URL, §9.1).
+    initiator: FolderRef,
     folders: BTreeSet<FolderRef>,
     /// Fetched bytes by `(owner, absolute path)`; files are immutable once named by hash.
     cache: BTreeMap<(String, String), Vec<u8>>,
@@ -147,13 +151,14 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
     /// (a chain URL, §9.1). Nothing is read until [`Self::sync`].
     pub fn open(rules: R, store: S, signer: K, chain: ChainId, initiator: FolderRef) -> Self {
         let mut folders = BTreeSet::new();
-        folders.insert(initiator);
+        folders.insert(initiator.clone());
         folders.insert((store.me().to_string(), signer.path()));
         Self {
             rules,
             store,
             signer,
             chain,
+            initiator,
             folders,
             cache: BTreeMap::new(),
             inputs: Inputs::default(),
@@ -245,7 +250,42 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             (me.clone(), folder.as_str().to_string()),
         );
         client.cache.insert((me, file), bytes);
+        client.mark_active().await?;
         Ok(client)
+    }
+
+    /// `pubky://<owner><path>chains/<chain>/`: the URL of this chain at `folder` (§9.1).
+    pub fn chain_url(&self, folder: &FolderRef) -> String {
+        format!(
+            "pubky://{}{}",
+            folder.0,
+            Folder::from_path(&folder.1).chain(&self.chain).as_str()
+        )
+    }
+
+    /// Write `index/active/<chain>` with the chain URL I joined through as its body (§7): a
+    /// UI listing, and the request a credited watchdog acts on (§11.2).
+    async fn mark_active(&mut self) -> Result<(), Error> {
+        let file = self.my_folder().active(&self.chain);
+        let body = self.chain_url(&self.initiator).into_bytes();
+        self.put_mine(file, body).await?;
+        Ok(())
+    }
+
+    /// Once the chain is final, move the marker to `index/finished/` (§8.4).
+    async fn mark_finished(&mut self) -> Result<(), Error> {
+        let me = self.store.me().to_string();
+        let active = self.my_folder().active(&self.chain);
+        let finished = self.my_folder().finished(&self.chain);
+        if self.cache.contains_key(&(me.clone(), finished.clone())) {
+            return Ok(());
+        }
+        let body = self.chain_url(&self.initiator).into_bytes();
+        self.put_mine(finished, body).await?;
+        if self.cache.remove(&(me, active.clone())).is_some() {
+            self.store.delete(&active).await?;
+        }
+        Ok(())
     }
 
     /// Replace the wall clock used for `ts` (tests).
@@ -315,6 +355,29 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             for w in &verdict.engaged {
                 discovered |= self.folders.insert((w.pubky.clone(), w.path.clone()));
             }
+            // Genesis names a witness by pubky alone; its folder is wherever it published
+            // `engage.jws` (§11.2). Until the fold has seen that, look for it in its `/pub/`.
+            if let Some((_, g)) = &self.genesis {
+                let named: Vec<String> = g
+                    .witnesses
+                    .iter()
+                    .map(|w| w.pubky.clone())
+                    .filter(|p| !verdict.engaged.iter().any(|w| w.pubky == *p))
+                    .filter(|p| !self.folders.iter().any(|(o, _)| o == p))
+                    .collect();
+                for pubky in named {
+                    for path in find_witness_folders(
+                        &self.store,
+                        &pubky,
+                        &self.chain,
+                        self.policy.max_files_per_sync,
+                    )
+                    .await?
+                    {
+                        discovered |= self.folders.insert((pubky.clone(), path));
+                    }
+                }
+            }
             // A recover in flight: adopt the new signer once the seat has changed hands.
             if let Some(pending) = &self.pending_signer {
                 let me = self.signer.pubky();
@@ -333,6 +396,10 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             if !discovered {
                 break;
             }
+        }
+        let is_final = self.verdict.as_ref().is_some_and(Verdict::is_final);
+        if is_final && self.my_index().is_ok() {
+            self.mark_finished().await?;
         }
         Ok(SyncReport {
             verdict: self.verdict.clone().expect("set above"),
@@ -586,7 +653,9 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         };
         let bytes = sign_record(&self.signer, typ::CONFIRM, &c).await?;
         let file = self.my_folder().chain(&self.chain).confirm(0, &g_link.hash);
-        self.put_mine(file, bytes).await
+        let hash = self.put_mine(file, bytes).await?;
+        self.mark_active().await?;
+        Ok(hash)
     }
 
     /// Build a link at the open seq in `round` on the current head.
@@ -995,8 +1064,8 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
 
     // ── Mirroring (§7) ──────────────────────────────────────────────────────────────────────
 
-    /// Mirror every committed link, its QC and the receipts I hold for it into my folder.
-    /// Returns how many files were written.
+    /// Mirror every committed link, its QC, the receipts I hold for it and each engaged
+    /// witness's `engage.jws` into my folder (§7). Returns how many files were written.
     pub async fn mirror(&mut self) -> Result<usize, Error> {
         let v = self.require_verdict()?.clone();
         let me = self.store.me().to_string();
@@ -1004,6 +1073,16 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         let folder = self.my_folder().chain(&self.chain);
         let mut written = 0;
         let mut writes: Vec<(String, Vec<u8>)> = Vec::new();
+        for w in &v.engaged {
+            let mine = self.inputs.engagements.iter().find(|bytes| {
+                Signed::<Engagement>::decode((*bytes).clone(), typ::WITNESS)
+                    .map(|e| e.payload.kid == w.kid && e.payload.until == w.until)
+                    .unwrap_or(false)
+            });
+            if let Some(bytes) = mine {
+                writes.push((folder.mirrored_engagement(&w.kid), bytes.clone()));
+            }
+        }
         for c in &v.committed {
             let seq = c.link.payload.seq;
             writes.push((folder.link(seq, &c.link.hash), c.link.bytes.clone()));
@@ -1170,6 +1249,25 @@ pub async fn verify_from<R: Rules, S: Store>(
         for w in &v.engaged {
             discovered |= folders.insert((w.pubky.clone(), w.path.clone()));
         }
+        if let Some(g) = v.genesis() {
+            for w in &g.witnesses {
+                if v.engaged.iter().any(|e| e.pubky == w.pubky)
+                    || folders.iter().any(|(o, _)| *o == w.pubky)
+                {
+                    continue;
+                }
+                for path in find_witness_folders(
+                    store,
+                    &w.pubky,
+                    chain,
+                    Policy::default().max_files_per_sync,
+                )
+                .await?
+                {
+                    discovered |= folders.insert((w.pubky.clone(), path));
+                }
+            }
+        }
         verdict = Some(v);
         if !discovered {
             break;
@@ -1180,6 +1278,24 @@ pub async fn verify_from<R: Rules, S: Store>(
         suspects,
         folders: folders.into_iter().collect(),
     })
+}
+
+/// The protocol folders under `pubky`'s `/pub/` holding a `witness/<chain>/engage.jws`
+/// (§11.2): discovery for a witness genesis names by pubky alone. Bounded by `max_files`.
+async fn find_witness_folders<S: Store>(
+    store: &S,
+    pubky: &str,
+    chain: &ChainId,
+    max_files: usize,
+) -> Result<Vec<String>, Error> {
+    let suffix = format!("witness/{chain}/engage.jws");
+    let mut listed = store.list(pubky, "/pub/").await?;
+    listed.truncate(max_files);
+    Ok(listed
+        .into_iter()
+        .filter_map(|l| l.path.strip_suffix(suffix.as_str()).map(str::to_string))
+        .filter(|folder| folder.ends_with(&format!("/{}/", pubky_mayfly::PROTOCOL_FOLDER)))
+        .collect())
 }
 
 /// Does a `<seq8>-<h16>.jws` name disagree with the content's hash?

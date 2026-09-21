@@ -47,6 +47,18 @@ impl Folder {
     pub fn witness(&self, chain: &ChainId) -> WitnessFolder {
         WitnessFolder(format!("{}witness/{}/", self.0, chain))
     }
+
+    /// `index/active/<chain_id>`: the marker a party writes for a chain it is in (§7). Its
+    /// body is the chain URL the party joined through; a watchdog reads it as a request to
+    /// watch (§11.2).
+    pub fn active(&self, chain: &ChainId) -> String {
+        format!("{}index/active/{}", self.0, chain)
+    }
+
+    /// `index/finished/<chain_id>`: where the marker moves when a `close` commits (§8.4).
+    pub fn finished(&self, chain: &ChainId) -> String {
+        format!("{}index/finished/{}", self.0, chain)
+    }
 }
 
 /// `…/chains/<chain_id>/`.

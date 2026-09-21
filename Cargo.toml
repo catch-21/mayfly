@@ -4,6 +4,7 @@ members = [
   "crates/core",
   "crates/rules",
   "crates/client",
+  "crates/watchdog",
 ]
 
 [workspace.package]

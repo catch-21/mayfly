@@ -3318,6 +3318,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pubky-mayfly-watchdog"
+version = "0.1.0"
+dependencies = [
+ "pubky-common",
+ "pubky-mayfly",
+ "pubky-mayfly-client",
+ "pubky-testnet",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "pubky-testnet"
 version = "0.12.0"
 dependencies = [

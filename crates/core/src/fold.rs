@@ -184,8 +184,6 @@ pub enum AnomalyKind {
     /// A witness that never receipted, receipted selectively, deleted a receipt, or contradicts
     /// other witnesses (§11.6 table).
     Witness(String),
-    /// Two engagements for one witness pubky with contradictory `until`.
-    WitnessEquivocation,
 }
 
 /// A valid candidate at the open seq.
@@ -821,8 +819,11 @@ impl<'a, R: Rules> Fold<'a, R> {
     }
 
     /// Step 2 / 3f: establish every engagement `pubky` has held for this chain from the pool
-    /// and seat the governing one — the later `until` (§11.2). Genesis witnesses are
-    /// established before the fold; witnesses seated by a `witnesses` link when it commits.
+    /// and seat the governing one — the later `until` (§11.2). Several engagements are the
+    /// normal shape of a renewed watchdog, not evidence of anything; a watchdog that *shrank*
+    /// its window is caught by comparing its current `engage.jws` with the parties' mirrors
+    /// (§11.6), which files alone cannot order. Genesis witnesses are established before the
+    /// fold; witnesses seated by a `witnesses` link when it commits.
     fn establish_witness(&mut self, pubky: &str) {
         let pool = self.engagement_pool.clone();
         let mut mine: Vec<(Engaged, Hash)> = Vec::new();
@@ -833,15 +834,6 @@ impl<'a, R: Rules> Fold<'a, R> {
         }
         if mine.is_empty() {
             return;
-        }
-        let untils: BTreeSet<u64> = mine.iter().map(|(m, _)| m.until).collect();
-        if untils.len() > 1 {
-            self.anomalies.push(Anomaly {
-                against: Some(pubky.to_string()),
-                seq: None,
-                kind: AnomalyKind::WitnessEquivocation,
-                evidence: mine.iter().map(|(_, h)| *h).collect(),
-            });
         }
         let (governing, _) = mine
             .into_iter()
