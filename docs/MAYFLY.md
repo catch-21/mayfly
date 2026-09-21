@@ -1521,6 +1521,23 @@ watchdog's reputation was always going to rest on receipts delivered, not on inv
 `payment` stays optional; a credit-backed engagement omits it or carries whatever voucher the
 watchdog chooses to sign.
 
+**Paykit, for later.** [Paykit](https://github.com/pubky/paykit-rs) (pre-production at the time
+of writing; Payment Requests at v0.2 draft) is the natural way to settle credit, alongside or
+instead of L402, because it removes the one server L402 assumes. A watchdog publishes its
+Payment Endpoints under its own pubky, so a customer's app discovers how to pay it by reading a
+homeserver, as it discovers everything else here. Payment Requests are payee-initiated over a
+`pubky-noise` Encrypted Link — watchdog as payee, customer as payer — and a *recurring* request
+with a `billing_period` is precisely a watch-time subscription. The payer's
+`paykit.payment_proof` carries the rail proof (a BOLT11 preimage, or another rail's) and must
+copy the payee's `payment_reference` unchanged, which is where the watchdog names the credit
+account or, for a per-chain purchase, the `chain_id` — the same binding the L402 invoice
+description carries. The watchdog's Encrypted Receipt gives the customer the evidence for "I
+paid for thirty days and you lapsed", which L402 alone does not. What Paykit does not give is
+public legibility: the exchange is private, so a watchdog that wants "paid to watch this chain"
+in the record puts the rail proof and `payment_reference` into `payment` itself. Paykit executes
+no payments and detects no settlement; a wallet or processor adapter sits behind the watchdog
+either way.
+
 ### 11.3 Receipts and the stopwatch
 
 For **every record** it observes — link, confirmation or reject, from any party — the watchdog
@@ -1952,3 +1969,8 @@ used here (`pubky-mayfly`, `@mayfly/*`) do not collide.
    which a Grant is, so such an attestation could be admitted as a second type without changing
    the chain format. This is the upgrade path if Ring is willing; the Grant is the design until
    then.
+6. **Settling watchdog credit with Paykit** (§11.2). Feasible and a better fit than L402 for
+   the credit deployment — Pubky-native discovery, recurring Payment Requests as
+   subscriptions, Encrypted Receipts for the customer — once Paykit is past pre-production.
+   Open: whether the `payment` field grows a variant for the Paykit `payment_reference`, or
+   stays rail-proof only.
