@@ -61,6 +61,27 @@ impl Folder {
     }
 }
 
+/// Parse a chain URL — `pubky://<owner>/pub/<client_id>/mayfly/chains/<chain_id>/` (§9.1), the
+/// form an invite carries and [`ChainFolder`] paths embed — into the id and the folder it
+/// names, `(owner, protocol folder path)`.
+pub fn parse_chain_url(url: &str) -> Result<(ChainId, (String, String)), crate::Error> {
+    let bad = || crate::Error::State(format!("{url:?} is not a chain URL"));
+    let rest = url.trim().strip_prefix("pubky://").ok_or_else(bad)?;
+    let slash = rest.find('/').ok_or_else(bad)?;
+    let (owner, path) = (&rest[..slash], &rest[slash..]);
+    let at = path.rfind("chains/").ok_or_else(bad)?;
+    let folder = &path[..at];
+    let id = path[at + "chains/".len()..].trim_end_matches('/');
+    if owner.is_empty()
+        || Folder::from_path(folder).as_str() != folder
+        || !folder.ends_with(&format!("/{PROTOCOL_FOLDER}/"))
+    {
+        return Err(bad());
+    }
+    let chain = ChainId::parse(id)?;
+    Ok((chain, (owner.to_string(), folder.to_string())))
+}
+
 /// `…/chains/<chain_id>/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainFolder(String);
@@ -189,6 +210,20 @@ mod tests {
             c.reject(7, 1),
             format!("/pub/chess.example/mayfly/chains/{chain}/rejects/00000007-r1.jws")
         );
+    }
+
+    #[test]
+    fn chain_urls_round_trip() {
+        let chain = ChainId::derive(b"g");
+        let url = format!("pubky://alice/pub/chess.example/mayfly/chains/{chain}/");
+        let (id, folder) = parse_chain_url(&url).unwrap();
+        assert_eq!(id, chain);
+        assert_eq!(
+            folder,
+            ("alice".into(), "/pub/chess.example/mayfly/".into())
+        );
+        assert!(parse_chain_url("pubky://alice/pub/x/chains/NOPE/").is_err());
+        assert!(parse_chain_url("https://example.com/").is_err());
     }
 
     #[test]

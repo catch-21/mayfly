@@ -12,11 +12,11 @@ use std::time::Duration;
 use base64::Engine;
 use serde_json::{json, Value};
 
-use pubky_mayfly::fold::{self, Config, Inputs, OpenView, Verdict};
+use pubky_mayfly::fold::{self, Config, Inputs, OpenCandidate, OpenView, Verdict};
 use pubky_mayfly::genesis::{self, Genesis};
 use pubky_mayfly::hash::{ChainId, Hash};
 use pubky_mayfly::record::{
-    CloseBody, CloseReason, Confirmation, Engagement, Link, Receipt, Reject, Signed,
+    CloseBody, CloseReason, Confirmation, Engagement, Kind, Link, Receipt, Reject, Signed,
 };
 use pubky_mayfly::rules::{state_hash, PartyIndex, Rules};
 use pubky_mayfly::vote::designated;
@@ -108,6 +108,52 @@ pub struct SyncReport {
 /// Where one party's records live: `(owner pubky, protocol folder path)`.
 type FolderRef = (String, String);
 
+/// What [`ChainClient::act`] did, or needs the app to decide (§8.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// Confirmed a valid rules proposal in my round.
+    Confirmed(Hash),
+    /// As the designated proposer of a round after a dead one, re-proposed the lowest-hash
+    /// content that received a vote (§6.4).
+    Reproposed {
+        /// The earlier candidate.
+        earlier: Hash,
+        /// My new link.
+        link: Hash,
+    },
+    /// As the designated proposer with nothing worth re-proposing, passed (§6.3).
+    Passed(Hash),
+    /// Skipped a designated proposer silent for `think_ms` on my clock (§6.3, §8.2 step 5).
+    Skipped(Hash),
+    /// A candidate an honest client never decides alone — a `close`, `recover` or
+    /// `witnesses` link (§6.7, §6.8, §11.2) — or a re-proposal of one. Show it to the user;
+    /// then [`ChainClient::confirm`], [`ChainClient::reject`], or, if `repropose`,
+    /// [`ChainClient::repropose`] or [`ChainClient::pass`].
+    Decision {
+        /// The candidate.
+        candidate: OpenCandidate,
+        /// The round I would vote in.
+        round: u32,
+        /// True when the decision is whether to re-propose it, not whether to confirm it.
+        repropose: bool,
+    },
+    /// Round `round` (≥ 1) is mine to propose in and nothing was voted for in the dead round
+    /// before it: propose, or [`ChainClient::pass`].
+    MyTurn {
+        /// The round.
+        round: u32,
+    },
+    /// Policy (§11.2): holding my vote until the head is witnessed by `want`.
+    AwaitingWitnesses {
+        /// Receipts held.
+        have: usize,
+        /// Engaged witnesses.
+        of: usize,
+        /// Policy.
+        want: usize,
+    },
+}
+
 /// One party's client for one chain.
 pub struct ChainClient<R: Rules, S: Store, K: Signer> {
     rules: R,
@@ -128,6 +174,10 @@ pub struct ChainClient<R: Rules, S: Store, K: Signer> {
     nonce: Option<[u8; 16]>,
     /// A `recover` in flight: the new signer, adopted when the seat's key changes.
     pending_signer: Option<K>,
+    /// `(seq, round, when on my clock)` I first saw the round I am in, for skipping (§8.2).
+    round_seen: Option<(u64, u32, u64)>,
+    /// The seq at which I last skipped: one skip per party per seq (§6.3).
+    skipped_at: Option<u64>,
     /// Client policy.
     pub policy: Policy,
     clock: Box<dyn Fn() -> u64 + Send + Sync>,
@@ -167,9 +217,24 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             genesis: None,
             nonce: None,
             pending_signer: None,
+            round_seen: None,
+            skipped_at: None,
             policy: Policy::default(),
             clock: Box::new(now_ms),
         }
+    }
+
+    /// A client for the chain an invite names (§8.1): a chain URL
+    /// `pubky://<owner>/pub/<client_id>/mayfly/chains/<chain_id>/`. Nothing is read until
+    /// [`Self::sync`]; then [`Self::join`] if I am a party.
+    pub fn open_url(rules: R, store: S, signer: K, url: &str) -> Result<Self, Error> {
+        let (chain, initiator) = crate::layout::parse_chain_url(url)?;
+        Ok(Self::open(rules, store, signer, chain, initiator))
+    }
+
+    /// The URL to invite others with: this chain at my folder.
+    pub fn invite_url(&self) -> String {
+        self.chain_url(&(self.store.me().to_string(), self.signer.path()))
     }
 
     /// Write genesis (§6.6, §8.1) as the initiator and return the client for it.
@@ -400,6 +465,13 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         let is_final = self.verdict.as_ref().is_some_and(Verdict::is_final);
         if is_final && self.my_index().is_ok() {
             self.mark_finished().await?;
+        }
+        // Remember when the round I am in became current, for skipping.
+        if let Some(open) = self.verdict.as_ref().and_then(|v| v.open.as_ref()) {
+            let now = (open.seq, Self::current_round(open));
+            if self.round_seen.map(|(s, r, _)| (s, r)) != Some(now) {
+                self.round_seen = Some((now.0, now.1, self.ts()));
+            }
         }
         Ok(SyncReport {
             verdict: self.verdict.clone().expect("set above"),
@@ -760,6 +832,21 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         self.put_mine(file, bytes).await
     }
 
+    /// Propose typed rules content (§8.2): `body` serialises to an object with a `"kind"`
+    /// field, which becomes the link's `kind`; the rest is its `body`. This is the shape
+    /// `#[serde(tag = "kind")]` gives an enum, and what every rules crate here uses.
+    pub async fn propose_body(&mut self, body: &R::Body) -> Result<Hash, Error> {
+        let mut value = serde_json::to_value(body).map_err(|e| Error::State(e.to_string()))?;
+        let Some(obj) = value.as_object_mut() else {
+            return Err(Error::State("a body serialises to an object".into()));
+        };
+        let kind = match obj.remove("kind") {
+            Some(Value::String(k)) => k,
+            _ => return Err(Error::State("a body carries its `kind`".into())),
+        };
+        self.propose(&kind, value).await
+    }
+
     /// Propose rules content of `kind` at the open seq (§8.2).
     pub async fn propose(&mut self, kind: &str, body: Value) -> Result<Hash, Error> {
         let (_, open) = self.open_view()?;
@@ -806,18 +893,27 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         }
     }
 
-    /// The lowest-hash link that received any vote in the last dead round, if any (§6.4).
+    /// What the designated proposer re-proposes after a dead round (§6.4): the lowest-hash
+    /// link that received a vote in the most recent round that had one — a round killed by
+    /// skips has no candidates, so the content carried forward is the last that was proposed.
     pub fn lowest_voted_in_dead_round(&self) -> Result<Option<Hash>, Error> {
         let (_, open) = self.open_view()?;
         if !open.dead {
             return Ok(None);
         }
-        Ok(open
+        let latest = open
             .candidates
             .iter()
-            .filter(|c| c.round == open.round && c.votes > 0)
-            .map(|c| c.hash)
-            .min())
+            .filter(|c| c.round <= open.round && c.votes > 0)
+            .map(|c| c.round)
+            .max();
+        Ok(latest.and_then(|r| {
+            open.candidates
+                .iter()
+                .filter(|c| c.round == r && c.votes > 0)
+                .map(|c| c.hash)
+                .min()
+        }))
     }
 
     /// Propose `close {finished | agreed}` (§6.8).
@@ -1059,7 +1155,122 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
                 "the designated proposer passes, not skips".into(),
             ));
         }
-        self.write_reject(round, None).await
+        let seq = open.seq;
+        let hash = self.write_reject(round, None).await?;
+        self.skipped_at = Some(seq);
+        Ok(hash)
+    }
+
+    // ── The honest step (§8.2) ──────────────────────────────────────────────────────────────
+
+    /// Sync, mirror, and do what an honest party does without asking anyone (§8.2 steps 2–5):
+    /// confirm a valid rules proposal in my round; as the designated proposer after a dead
+    /// round, re-propose the lowest-hash rules content that received a vote, or pass; skip a
+    /// designated proposer who has been silent for the rules' `think_ms` on my clock. What it
+    /// will not do alone — vote on a `close`, `recover` or `witnesses` link, or propose — it
+    /// returns as [`Action::Decision`] and [`Action::MyTurn`] for the app to put to the user.
+    ///
+    /// Idempotent: call it whenever anything changes (an event, a poll, a user action). It
+    /// never casts a second vote in a round and never skips twice at one seq.
+    pub async fn act(&mut self) -> Result<Vec<Action>, Error> {
+        self.sync().await?;
+        self.mirror().await?;
+        let Some(open) = self.verdict.as_ref().and_then(|v| v.open.clone()) else {
+            return Ok(Vec::new());
+        };
+        let me = self.my_index()?;
+        let n = self.n()?;
+        let round = Self::current_round(&open);
+        let voted = open
+            .voters
+            .get(&round)
+            .map(|v| v.contains(&me))
+            .unwrap_or(false);
+        if voted {
+            return Ok(Vec::new());
+        }
+        let designated_now = round >= 1 && designated(&self.chain, open.seq, round, n) == me;
+        let mut out = Vec::new();
+
+        if open.dead {
+            // The dead round's votes are spent; round `round` has none yet.
+            if designated_now {
+                match self.lowest_voted_in_dead_round()? {
+                    Some(earlier) => {
+                        let cand = open.candidates.iter().find(|c| c.hash == earlier).cloned();
+                        match cand {
+                            Some(c) if Kind::parse(&c.kind) == Kind::Rules => {
+                                let link = self.repropose(earlier).await?;
+                                out.push(Action::Reproposed { earlier, link });
+                            }
+                            Some(c) => out.push(Action::Decision {
+                                candidate: c,
+                                round,
+                                repropose: true,
+                            }),
+                            None => out.push(Action::MyTurn { round }),
+                        }
+                    }
+                    None => out.push(Action::MyTurn { round }),
+                }
+            } else if let Some(h) = self.maybe_skip(&open, round).await? {
+                out.push(Action::Skipped(h));
+            }
+            return Ok(out);
+        }
+
+        let mut live: Vec<OpenCandidate> = open
+            .candidates
+            .iter()
+            .filter(|c| c.round == round && c.author != me)
+            .cloned()
+            .collect();
+        live.sort_by_key(|c| c.hash);
+        match live.first() {
+            None => {
+                if designated_now {
+                    out.push(Action::MyTurn { round });
+                } else if let Some(h) = self.maybe_skip(&open, round).await? {
+                    out.push(Action::Skipped(h));
+                }
+            }
+            Some(c) if Kind::parse(&c.kind) == Kind::Rules => match self.confirm(c.hash).await {
+                Ok(_) => out.push(Action::Confirmed(c.hash)),
+                Err(Error::AwaitingWitnesses { have, of, want }) => {
+                    out.push(Action::AwaitingWitnesses { have, of, want });
+                }
+                Err(e) => return Err(e),
+            },
+            Some(c) => out.push(Action::Decision {
+                candidate: c.clone(),
+                round,
+                repropose: false,
+            }),
+        }
+        Ok(out)
+    }
+
+    /// Skip if the designated proposer of `round` has been silent for `think_ms` on my clock
+    /// since the round became current, and I have not skipped at this seq (§8.2 step 5).
+    async fn maybe_skip(&mut self, open: &OpenView, round: u32) -> Result<Option<Hash>, Error> {
+        if round == 0 || self.skipped_at == Some(open.seq) {
+            return Ok(None);
+        }
+        let Some((seq, r, since)) = self.round_seen else {
+            return Ok(None);
+        };
+        if (seq, r) != (open.seq, round) {
+            return Ok(None);
+        }
+        let think_ms = self
+            .genesis
+            .as_ref()
+            .map(|(_, g)| g.time_control().think_ms)
+            .unwrap_or(u64::MAX);
+        if self.ts().saturating_sub(since) < think_ms {
+            return Ok(None);
+        }
+        self.skip().await.map(Some)
     }
 
     // ── Mirroring (§7) ──────────────────────────────────────────────────────────────────────

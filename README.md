@@ -64,3 +64,13 @@ docker run --name pubky-postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=
 TEST_PUBKY_CONNECTION_STRING='postgres://postgres:postgres@localhost:5433/postgres' \
   cargo test --workspace -- --ignored
 ```
+
+## Building on Mayfly
+
+`docs/skills/mayfly-app/SKILL.md` is the guide to writing an app or a rules module, for people
+and agents alike, with an API cheat-sheet (`reference.md`) beside it; `AGENTS.md` points agents
+there on entry. The shape of an app is
+`crates/client/tests/list.rs`: join from an invite URL, call `act()` on every change, put
+`Action::Decision`s to the user.
+
+British English in prose and identifiers. No trailing whitespace.

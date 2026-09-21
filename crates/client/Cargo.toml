@@ -20,4 +20,5 @@ futures-util = "0.3"
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
 
 [dev-dependencies]
+pubky-mayfly-rules = { path = "../rules" }
 pubky-testnet.workspace = true

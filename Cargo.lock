@@ -3301,6 +3301,7 @@ dependencies = [
  "pubky",
  "pubky-common",
  "pubky-mayfly",
+ "pubky-mayfly-rules",
  "pubky-testnet",
  "serde",
  "serde_json",
