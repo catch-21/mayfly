@@ -1848,12 +1848,15 @@ bystanders cannot disagree about validity.
 
 Apps, in build order:
 
-1. **Shared list** (`list/1`) — two or more members, invite by link, real-time via SSE, explorer
-   tab. Exercises confirmation, competing proposals and mirroring with trivial rules.
-2. **Chess** (`chess/1`) — roles, draws, resignation, correspondence time control adjudicated by a
+1. **Shared list** (`list/1`) — two or more members, invite by link, real-time via SSE.
+   Exercises confirmation, competing proposals and mirroring with trivial rules.
+2. **Chain viewer** — read-only, no sign-in. Follows any chain, live
+   or finished, from a link to its genesis or a later proposal. Every link in full, with decoded
+   JSON, and verification failures highlighted on the record they belong to (§14).
+3. **Chess** (`chess/1`) — roles, draws, resignation, correspondence time control adjudicated by a
    watchdog stopwatch, spectator page.
-3. **Agreed document** (`document/1`) — proposals, acceptances, redline, watchdog timestamps.
-4. **Watchdog** — the sidecar service (Rust, runs next to a homeserver or anywhere), an L402
+4. **Agreed document** (`document/1`) — proposals, acceptances, redline, watchdog timestamps.
+5. **Watchdog** — the sidecar service (Rust, runs next to a homeserver or anywhere), an L402
    payment front, and a dashboard: engaged chains, receipts, payments; for participants, a
    picker to nominate and pay watchdogs.
 
@@ -1898,7 +1901,7 @@ Tests use `pubky-testnet::EphemeralTestnet` as the SDK's own tests do.
    `Pubky` verifies from each homeserver using only the declared `path`s; competing proposals
    converge through a dead round; an offline member stalls and resumes; a `recover` moves a
    party to a third folder and the verifier follows it; a tampered mirror is detected.
-3. **Shared list web app** — WASM bindings, delegated grant sign-in, explorer. *Native first:*
+3. **Shared list web app and chain viewer** — WASM bindings, delegated grant sign-in. *Native first:*
    `mayfly-demo` is a narrated shopping list on a testnet (three grant sessions, a watchdog,
    happy and sad paths) with a live explorer page rendering every homeserver's files and the
    verified chain (§14, demo edition), including a per-record evidence panel. The web app
@@ -1961,15 +1964,23 @@ Phases, with their dependencies:
   (§14 proper). Built with wasm-pack as the SDK is; Node tests replay `crates/client/tests/list.rs`
   through a JS memory store. Package name to be confirmed; likely under the company org
   (`@synonymdev/mayfly`) rather than `@mayfly/*` as §15 and §17 assume.
-- **D. Web app `apps/list`.** Static build deployable to GitHub Pages with a `/testnet/`
-  flavour, as pubky-explorer does. Framework: Next.js static export follows pubky-app's
-  convention; Vite is the fallback if the wasm loading fights Next. Sign-in by
-  `startGrantAuthFlow` (Pubky Ring QR) for real use, local-keypair `signup`/`signin` as a
-  testnet developer shortcut. Screens: create (parties by pubky, quorum, watchdog), share the
-  invite URL, join with the genesis consent screen (never auto-join), the list (add, tick,
+- **D. Web app `apps/list`.** The app each party uses. Static build deployable to GitHub Pages
+  with a `/testnet/` flavour, as pubky-explorer does. Next.js static export; Vite is the
+  fallback if the wasm loading fights Next. Sign-in by `startGrantAuthFlow` (Pubky Ring QR)
+  for real use, local-keypair `signup`/`signin`
+  as a testnet developer shortcut. Screens: create (parties by pubky, quorum, watchdog), share
+  the invite URL, join with the genesis consent screen (never auto-join), the list (add, tick,
   untick, remove, edit), decisions (close, recover, abandoned close), per-item status
-  (provisional, final, witnessed *m/k*), an explorer tab with the evidence panel. Loop: `act()`
-  on event-stream events, on a timer, after every user action — the `list.rs` shape.
+  (provisional, final, witnessed *m/k*). Loop: `act()` on event-stream events, on a timer,
+  after every user action — the `list.rs` shape. The chain URL opens in the viewer (G).
+- **G. Chain viewer `apps/view`.** Read-only, no sign-in.
+  Opened with a `pubky://` link to the chain or to any record in it — the genesis, or a later
+  proposal. Follows a live chain and reads a finished one the same way. Every link in full:
+  decoded JSON, embedded confirmations, receipts and Grants unpacked, and the checks on that
+  file (signature, bytes against the file name and the `ETag`). A verification failure is
+  highlighted on the record it belongs to: a bad signature, a hash mismatch, a fold anomaly, a
+  rules refusal, a tampered mirror. Rules-agnostic, so a list, a game or a document all appear
+  as a chain. Same verifier the parties run (§14), built on C's `verifyFrom`.
 - **E. Watchdog service and Docker.** A `mayfly-watchdog` binary in `crates/watchdog`: config
   from env or TOML — network (`mainnet` | `testnet[:host]`), homeserver pubky, optional signup
   token, client id, keypair file (generated on first run), free pubkys, default credit,
@@ -1982,7 +1993,8 @@ Phases, with their dependencies:
   Then §14 and §15 rewritten to the packages that shipped, and a note on what browser SSE and
   relay-only DHT access cost in practice.
 
-Order: A → B → C, with E in parallel from the start (it depends on nothing above); then D, then F.
+Order: A → B → C, with E in parallel from the start (it depends on nothing above); then D and G
+(G needs only C); then F, covering both apps.
 
 *Status:* A and B done. Core, rules and the client without its `pubky-sdk`
 feature build for `wasm32-unknown-unknown`, enforced by CI; the SDK fork's JS bindings expose
