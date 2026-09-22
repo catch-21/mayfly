@@ -3316,6 +3316,8 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures-util",
+ "gloo-timers",
+ "js-sys",
  "pubky",
  "pubky-common",
  "pubky-mayfly",

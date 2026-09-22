@@ -50,7 +50,14 @@ cargo test --workspace                                          # core invariant
 cargo test -p pubky-mayfly --test invariants                    # property tests alone
 cargo test -p pubky-mayfly-client --test testnet -- --ignored   # against a real homeserver
 cargo test -p pubky-mayfly-watchdog --test testnet -- --ignored # the watchdog on a real homeserver
+cargo clippy -p pubky-mayfly -p pubky-mayfly-rules -p pubky-mayfly-client \
+  --no-default-features --target wasm32-unknown-unknown         # the browser build stays green
 ```
+
+Core, rules and the client compile for `wasm32-unknown-unknown` (`rustup target add
+wasm32-unknown-unknown`). The client's Pubky SDK store and signer sit behind its default
+`pubky-sdk` feature; the wasm build turns it off and JavaScript supplies the `Store` and
+`Signer` instead (spec §16.2.1). CI (`.github/workflows/ci.yml`) runs both builds.
 
 The client flows in `crates/client/tests/flows.rs` and the watchdog flows in
 `crates/watchdog/tests/watchdog.rs` run over an in-memory store on any machine. The same flows

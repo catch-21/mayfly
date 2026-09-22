@@ -1901,8 +1901,8 @@ Tests use `pubky-testnet::EphemeralTestnet` as the SDK's own tests do.
 3. **Shared list web app** — WASM bindings, delegated grant sign-in, explorer. *Native first:*
    `mayfly-demo` is a narrated shopping list on a testnet (three grant sessions, a watchdog,
    happy and sad paths) with a live explorer page rendering every homeserver's files and the
-   verified chain (§14, demo edition). The web app proper still needs the JS `signJws` binding
-   and a WASM-safe client.
+   verified chain (§14, demo edition), including a per-record evidence panel. The web app
+   proper is planned in §16.2.1.
 4. **Chess rules and app** — `shakmaty`, PGN fixtures, time control.
 5. **Watchdog** — service, receipts, L402, stopwatch adjudication in the verifier; chess timeouts
    end to end. *Done, less L402 and chess:* `pubky-mayfly-watchdog` engages, receipts every
@@ -1914,6 +1914,80 @@ Tests use `pubky-testnet::EphemeralTestnet` as the SDK's own tests do.
    parties' `index/active/` markers, renewal while credit lasts, lapse on `index/finished/`.
 6. **Agreed document** — rules and redline explorer plugin.
 
+### 16.2.1 Phase 3 in detail: the shopping list web app, a hosted watchdog
+
+Two findings fix the shape: `pubky-mayfly` and `pubky-mayfly-rules` already compile for
+`wasm32-unknown-unknown` unchanged, and the SDK's own JS package (`@synonymdev/pubky`) is a
+wasm-pack build of the Rust SDK — so the toolchain is the one the ecosystem already uses. Only
+the client crate is not WASM-ready (`tokio::time`, a `rt-multi-thread` lib dependency, `Send`
+bounds on the async traits).
+
+**WASM, not a JS rewrite.** The fold, the strict parser, the three hash spellings, rounds and
+skips and `act()` are the subtle parts, and they are property-tested in Rust. A JavaScript
+second implementation would have to be kept in lockstep forever, and §14 rests on participants
+and bystanders running *the same* verifier. Hand-written JS is UI glue only.
+
+**Where the WASM boundary sits.** The Mayfly module must not link its own copy of the `pubky`
+SDK: `@synonymdev/pubky` is a separate wasm-bindgen instance and its `Session` cannot cross into
+ours. So the module takes storage and signing from JS through the `Store` and `Signer` traits
+that already exist:
+
+```ts
+const store  = { me, list, get, put, delete };                 // over session.storage / pubky.publicStorage
+const signer = { pubky, kid, clientId, grantJws, signJws };    // over session.grant
+const client = await ChainClient.openUrl("list/1", store, signer, inviteUrl);
+```
+
+The SDK stays the published npm package; Mayfly's wasm carries no network code (smaller, and
+testable in Node against a memory store); auth is untouched. The fallback, if the callback
+boundary proves awkward, is one wasm module bundling SDK and Mayfly together — simpler to wire,
+but it forks SDK distribution.
+
+Phases, with their dependencies:
+
+- **A. Client crate WASM-safe.** `rt-multi-thread` to dev-dependencies; a small `time` module
+  (`tokio` natively, `gloo-timers` on wasm) replacing the three `tokio::time` uses; `?Send`
+  async traits on wasm (JS futures are `!Send`); `pubky_store.rs` and `SessionSigner` behind a
+  default-on `pubky-sdk` feature so the wasm build excludes them; `cargo check --target
+  wasm32-unknown-unknown` for core, rules and client in CI.
+- **B. SDK JS bindings.** `GrantSession.signJws(typ, claims)`, `grantJws()`,
+  `clientPublicKey()` in `pubky-sdk/bindings/js`, refusing `pubky-*` as the Rust side does; Node
+  test; folded into the upstream PR that carries the Rust change.
+- **C. `crates/wasm` → npm package.** wasm-bindgen exports: `ChainClient` (create, openUrl, join,
+  act, proposeBody, confirm, reject, proposeClose, confirmAbandoned, state, verdict), `Action`s
+  and `Verdict` as plain objects via `serde-wasm-bindgen`, rules chosen by id, `GenesisSpec`,
+  `parseChainUrl`; and the explorer surface — `verifyFrom(store, chainUrl)` plus the demo's
+  `chain_view` and `decode_record` moved into the module, so any page renders any chain by URL
+  (§14 proper). Built with wasm-pack as the SDK is; Node tests replay `crates/client/tests/list.rs`
+  through a JS memory store. Package name to be confirmed; likely under the company org
+  (`@synonymdev/mayfly`) rather than `@mayfly/*` as §15 and §17 assume.
+- **D. Web app `apps/list`.** Static build deployable to GitHub Pages with a `/testnet/`
+  flavour, as pubky-explorer does. Framework: Next.js static export follows pubky-app's
+  convention; Vite is the fallback if the wasm loading fights Next. Sign-in by
+  `startGrantAuthFlow` (Pubky Ring QR) for real use, local-keypair `signup`/`signin` as a
+  testnet developer shortcut. Screens: create (parties by pubky, quorum, watchdog), share the
+  invite URL, join with the genesis consent screen (never auto-join), the list (add, tick,
+  untick, remove, edit), decisions (close, recover, abandoned close), per-item status
+  (provisional, final, witnessed *m/k*), an explorer tab with the evidence panel. Loop: `act()`
+  on event-stream events, on a timer, after every user action — the `list.rs` shape.
+- **E. Watchdog service and Docker.** A `mayfly-watchdog` binary in `crates/watchdog`: config
+  from env or TOML — network (`mainnet` | `testnet[:host]`), homeserver pubky, optional signup
+  token, client id, keypair file (generated on first run), free pubkys, default credit,
+  engagement length, renew-before, poll interval; `Operator::sweep()` in a loop; `/healthz`
+  and a status JSON. Multi-stage Dockerfile (builder → slim runtime, non-root, keypair volume).
+  `docker-compose.yml` for local end to end: Postgres, the `homeserver-testnet` image, the
+  watchdog. Then the same image against a real homeserver with a token.
+- **F. End to end, then this document.** Testnet: two browsers and the Dockerised watchdog on
+  one machine. Mainnet: the company's staging or a personal homeserver, with signup tokens.
+  Then §14 and §15 rewritten to the packages that shipped, and a note on what browser SSE and
+  relay-only DHT access cost in practice.
+
+Order: A → B → C, with E in parallel from the start (it depends on nothing above); then D, then F.
+
+*Status:* A and B done. Core, rules and the client without its `pubky-sdk`
+feature build for `wasm32-unknown-unknown`, enforced by CI; the SDK fork's JS bindings expose
+`signJws`, `grantJws`, `clientPublicKey` and `PublicKey.verify`.
+
 ### 16.3 SDK changes
 
 Required (phase 0, before the core crate can be exercised end to end):
@@ -1924,7 +1998,10 @@ Required (phase 0, before the core crate can be exercised end to end):
   wrappers over existing `pub(crate)` code in `pubky-sdk/src/actors/auth/grant/`. *Done in
   Rust:* `GrantCredential::{sign_jws, grant_jws, client_public_key}` and the same on
   `GrantSessionView`, plus `GrantSessionView::credential()`; `sign_jws` refuses the `pubky-*`
-  namespace. The JS binding is still to do.
+  namespace. *Done in JS:* `GrantSession.signJws(typ, claims)`, `grantJws()`,
+  `clientPublicKey()` in `pubky-sdk/bindings/js`, local and browser-delegated alike, with a
+  tape test in `pkg/tests/session.ts` that verifies the signature under `clientPublicKey` and
+  the Grant under the user's key.
 - **Homeserver `typ` check — nothing to do.** Verified in
   `pubky-homeserver/src/client_server/auth/grant/crypto/pop_verifier.rs`: the verifier already
   rejects any header `typ` other than `pubky-pop`. The domain separation this design relies on
@@ -1933,7 +2010,7 @@ Required (phase 0, before the core crate can be exercised end to end):
 Optional:
 
 - JS bindings: `PublicKey.verify(bytes, sig)` so browser verifiers use the SDK's Ed25519 rather
-  than a second library.
+  than a second library. *Done alongside `signJws`.*
 - Event stream: nothing needed; `content_hash` already gives the record hash.
 
 ---

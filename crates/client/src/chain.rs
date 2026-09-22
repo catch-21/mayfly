@@ -23,6 +23,7 @@ use pubky_mayfly::vote::designated;
 use pubky_mayfly::{typ, PROTOCOL_VERSION};
 
 use crate::layout::Folder;
+use crate::portable::{Clock, MaybeSend, MaybeSync};
 use crate::signer::{sign_record, Signer};
 use crate::store::{Listed, Store};
 use crate::Error;
@@ -190,14 +191,21 @@ pub struct ChainClient<R: Rules, S: Store, K: Signer> {
     skipped_at: Option<u64>,
     /// Client policy.
     pub policy: Policy,
-    clock: Box<dyn Fn() -> u64 + Send + Sync>,
+    clock: Clock,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_ms() -> u64 {
+    // `SystemTime::now` panics on wasm32-unknown-unknown; the browser's clock is `Date.now()`.
+    js_sys::Date::now() as u64
 }
 
 fn b64url(bytes: &[u8]) -> String {
@@ -364,7 +372,7 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
     }
 
     /// Replace the wall clock used for `ts` (tests).
-    pub fn with_clock(mut self, clock: impl Fn() -> u64 + Send + Sync + 'static) -> Self {
+    pub fn with_clock(mut self, clock: impl Fn() -> u64 + MaybeSend + MaybeSync + 'static) -> Self {
         self.clock = Box::new(clock);
         self
     }
@@ -1427,13 +1435,15 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
     /// fallback every store supports.
     pub async fn wait_for_change(&self, timeout: Duration) -> Result<bool, Error> {
         let before = self.fingerprint().await?;
-        let deadline = tokio::time::Instant::now() + timeout;
+        // Counted in sleeps rather than read from a monotonic clock, which wasm lacks.
+        let mut waited = Duration::ZERO;
         loop {
-            tokio::time::sleep(self.policy.poll).await;
+            crate::time::sleep(self.policy.poll).await;
+            waited += self.policy.poll;
             if self.fingerprint().await? != before {
                 return Ok(true);
             }
-            if tokio::time::Instant::now() >= deadline {
+            if waited >= timeout {
                 return Ok(false);
             }
         }

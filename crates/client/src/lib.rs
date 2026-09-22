@@ -8,20 +8,28 @@
 //! Everything is written against two small traits so the same flows run over an in-memory
 //! store in tests and over the Pubky SDK in an app:
 //!
-//! - [`Store`]: read anyone's `/pub/` folder, write my own ([`MemoryStore`], [`PubkyStore`]);
+//! - [`Store`]: read anyone's `/pub/` folder, write my own ([`MemoryStore`], `PubkyStore`);
 //! - [`Signer`]: the party's identity, chain key and app, and a JWS signature under that key
-//!   ([`LocalSigner`], [`SessionSigner`] over a Pubky grant session — §16.3).
+//!   ([`LocalSigner`], `SessionSigner` over a Pubky grant session — §16.3).
+//!
+//! The SDK-backed pair lives behind the default `pubky-sdk` feature. Without it the crate
+//! compiles for `wasm32-unknown-unknown`, where a JavaScript object implements the two traits
+//! (§16.2.1); see [`portable`] for how the `Send` bounds differ by target.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod chain;
 pub mod layout;
+pub mod portable;
+#[cfg(feature = "pubky-sdk")]
 pub mod pubky_store;
 pub mod signer;
 pub mod store;
+pub mod time;
 
 pub use chain::{Action, ChainClient, GenesisSpec, Policy, SyncReport};
+#[cfg(feature = "pubky-sdk")]
 pub use pubky_store::{PubkyStore, SessionSigner};
 pub use signer::{LocalSigner, Signer};
 pub use store::{Listed, MemoryStore, Store};

@@ -2,14 +2,13 @@
 //!
 //! [`Store`] is the only I/O the chain client does. [`MemoryStore`] implements it over the
 //! simulator's [`Storage`](pubky_mayfly::sim::Storage) so every flow can be exercised without a
-//! network; [`crate::pubky_store::PubkyStore`] implements it over the Pubky SDK.
+//! network; `PubkyStore` (feature `pubky-sdk`) implements it over the Pubky SDK.
 
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-
 use pubky_mayfly::sim::Storage;
 
+use crate::portable::{MaybeSend, MaybeSync};
 use crate::Error;
 
 /// One file as listed: the owner's pubky, the absolute path, and — where the store can say —
@@ -25,8 +24,9 @@ pub struct Listed {
 }
 
 /// Read-anyone, write-me storage.
-#[async_trait]
-pub trait Store: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait Store: MaybeSend + MaybeSync {
     /// My pubky (z32); the owner every `put` writes as.
     fn me(&self) -> &str;
 
@@ -90,7 +90,8 @@ impl MemoryStore {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Store for MemoryStore {
     fn me(&self) -> &str {
         &self.me

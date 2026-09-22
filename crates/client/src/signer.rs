@@ -2,10 +2,9 @@
 //!
 //! A [`Signer`] knows the party's identity, its chain key and app, and can produce a JWS under
 //! that key. [`LocalSigner`] holds the keypair (a keyed app, or a test); the Pubky SDK signer
-//! in [`crate::pubky_store::SessionSigner`] dispatches to a grant session, local or browser
+//! in `SessionSigner` (feature `pubky-sdk`) dispatches to a grant session, local or browser
 //! delegated, through `GrantCredential::sign_jws` (§16.3).
 
-use async_trait::async_trait;
 use pubky_common::auth::grant::GrantClaims;
 use pubky_common::auth::jws::{ClientId, GrantId, GRANT_JWS_TYP};
 use pubky_common::capabilities::Capability;
@@ -14,11 +13,13 @@ use serde::Serialize;
 
 use pubky_mayfly::{typ, PROTOCOL_FOLDER};
 
+use crate::portable::{MaybeSend, MaybeSync};
 use crate::Error;
 
 /// Who signs, as what, for which app.
-#[async_trait]
-pub trait Signer: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait Signer: MaybeSend + MaybeSync {
     /// Identity (z32).
     fn pubky(&self) -> String;
     /// Chain key: the Grant `cnf` (z32).
@@ -36,7 +37,7 @@ pub trait Signer: Send + Sync {
 }
 
 /// Sign a record with `signer`, checking the `typ` is one of ours (§5.2).
-pub async fn sign_record<T: Serialize + Sync>(
+pub async fn sign_record<T: Serialize + MaybeSync>(
     signer: &dyn Signer,
     typ_: &str,
     payload: &T,
@@ -102,7 +103,8 @@ impl LocalSigner {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Signer for LocalSigner {
     fn pubky(&self) -> String {
         self.identity.z32()

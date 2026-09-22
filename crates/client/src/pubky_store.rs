@@ -1,7 +1,7 @@
 //! [`Store`] and [`Signer`] over the Pubky SDK: public reads from any homeserver, writes and
-//! signatures through a grant session (§16.3).
+//! signatures through a grant session (§16.3). Native only (feature `pubky-sdk`): in the
+//! browser the SDK is a separate wasm module and JavaScript implements the traits instead.
 
-use async_trait::async_trait;
 use pubky::errors::RequestError;
 use pubky::{GrantCredential, Pubky, PubkySession, PublicKey};
 use pubky_common::auth::grant::GrantClaims;
@@ -39,7 +39,7 @@ where
         match op().await {
             Err(e) if transient(&e) && attempt < 3 => {
                 attempt += 1;
-                tokio::time::sleep(delay).await;
+                crate::time::sleep(delay).await;
                 delay *= 3;
             }
             other => return other,
@@ -91,7 +91,7 @@ fn owner_key(owner: &str) -> Result<PublicKey, Error> {
     PublicKey::try_from(owner).map_err(|e| Error::Store(format!("owner {owner:?}: {e}")))
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl Store for PubkyStore {
     fn me(&self) -> &str {
         &self.me
@@ -264,7 +264,7 @@ impl SessionSigner {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl Signer for SessionSigner {
     fn pubky(&self) -> String {
         self.pubky.clone()

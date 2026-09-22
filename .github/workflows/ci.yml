@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The workspace depends on sibling checkouts of pubky-common, pubky-sdk and
+      # pubky-testnet by path (README, "Layout"). Until the SDK change in §16.3 is published,
+      # CI fetches the fork that carries it and places this repository inside it.
+      - name: Fetch the pubky-homeserver checkout the path dependencies expect
+        run: |
+          git clone --depth 1 --branch catch-21/grant-jws-sign \
+            https://github.com/catch-21/pubky-core.git "$RUNNER_TEMP/pubky-homeserver"
+          rsync -a --exclude .git ./ "$RUNNER_TEMP/pubky-homeserver/mayfly/"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ runner.temp }}/pubky-homeserver/mayfly
+      - name: fmt
+        run: cargo fmt --check
+        working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly
+      - name: test
+        run: cargo test --workspace
+        working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the pubky-homeserver checkout the path dependencies expect
+        run: |
+          git clone --depth 1 --branch catch-21/grant-jws-sign \
+            https://github.com/catch-21/pubky-core.git "$RUNNER_TEMP/pubky-homeserver"
+          rsync -a --exclude .git ./ "$RUNNER_TEMP/pubky-homeserver/mayfly/"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ runner.temp }}/pubky-homeserver/mayfly
+      # Core, rules and the client (without the SDK feature) must stay WASM-safe (§16.2.1 A).
+      - name: clippy wasm32
+        run: >
+          cargo clippy -p pubky-mayfly -p pubky-mayfly-rules -p pubky-mayfly-client
+          --no-default-features --target wasm32-unknown-unknown -- -D warnings
+        working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly
