@@ -579,7 +579,9 @@ Consequences:
   **sole** proposal in that round: with competing proposals, refusing one so that the round
   ends and rotation decides is what §6.3 permits, and a verifier does not count it. A party
   who refuses the sole valid proposal in round 0 and again the designated re-proposal in round
-  1 has obstructed twice, in the open.
+  1 has obstructed twice, in the open. One proposal is exempt: a `close` with reason `agreed`
+  asks each party for consent to end the chain (§6.8), and consent may be withheld. Refusing
+  it is a vote for nothing that a verifier does not count as obstruction; the chain carries on.
 - **Quorum mode.** Genesis may set `confirm_quorum: q < N` (votes including the author,
   `q > N/2`). This tolerates parties who are merely offline; it is *not* analysed here for
   dishonest parties, because the locks above rely on every party's vote being needed. Chains

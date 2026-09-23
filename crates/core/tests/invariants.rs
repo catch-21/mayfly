@@ -856,6 +856,27 @@ fn presence_from_files() {
             && a.against.as_deref() == Some(sim.parties[2].kid().as_str())));
 }
 
+/// §6.8: a close by agreement asks every party for consent. Refusing it is that consent
+/// withheld, not obstruction, and the chain carries on.
+#[test]
+fn refusing_an_agreed_close_is_not_obstruction() {
+    let mut sim = Sim::new(Tally, 2, 0, &["chess.example"], 2);
+    sim.bootstrap().unwrap();
+    let close = sim
+        .propose_close(0, pubky_mayfly::record::CloseReason::Agreed)
+        .unwrap();
+    sim.reject(1, close).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert!(
+        v.anomalies
+            .iter()
+            .all(|a| a.kind != AnomalyKind::Obstruction),
+        "withholding consent to end the chain is not obstruction: {:?}",
+        v.anomalies
+    );
+    assert!(!v.is_final(), "a refused close leaves the chain open");
+}
+
 // ─── Reveals (§6.6) ───────────────────────────────────────────────────────────────────────────
 
 /// §6.6: when the rules want randomness, each party after the initiator reveals its nonce in

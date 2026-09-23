@@ -220,11 +220,11 @@ Stranger, and member C for later sections: `6dg5mnoi8du4ibxar7wqm8fnthoqz9hsrggx
 | A2 | pass | Home showed the pubky. Your lists: none yet. |
 | A3 | pass | Reload kept the same pubky and the empty list. |
 | A4 | pass | Empty members: "name at least one other member by pubky". Stayed on home. |
-| A5 | fail | Own pubky was not treated as empty. Page showed "genesis invalid: fewer than two parties". No list was written. |
-| A6 | fail | Create wrote `pubky://3mak4zm1h5f8kzbbqmh5zjdsk6m1qg631xbbt67zgpbgesdcoiry/pub/list.mayfly.example/mayfly/chains/8MS0ND8DKB5PA07RDPC99BE4ER/` and it stayed on Your lists. The page then showed `Core: grant: bad z32 key "not-a-pubky"`. |
+| A5 | pass | First session: own pubky was not treated as empty (`genesis invalid: fewer than two parties`). Recheck 23 Sep, separate Chrome profiles: refused as empty, no list written. |
+| A6 | pass | First session wrote `pubky://3mak4zm1…/chains/8MS0ND8DKB5PA07RDPC99BE4ER/` for `not-a-pubky`. Recheck: refused with "is not a pubky" before any chain was written. |
 | A7 | pass | `https://example.com/not-a-list` refused. Stayed on home. |
 | A8 | pass | New pubky `ohxc9q6kgnrfyw1nhfb5so1mygbjssrqzfeyimxtohwms999foso`. Previous list was not on that home. This identity is member A for section B. |
-| B1 | fail | Chain `pubky://ohxc9q6kgnrfyw1nhfb5so1mygbjssrqzfeyimxtohwms999foso/pub/list.mayfly.example/mayfly/chains/QFEHDVW0DXCYGHXP74KFTGMR64/`. B was marked not joined and the invite existed, but A was shown the add box and "Something to look at: UnconfirmedProposal at change 0", not "Waiting for the others". |
+| B1 | pass | First session (`…/chains/QFEHDVW0DXCYGHXP74KFTGMR64/`): add box and UnconfirmedProposal before anyone joined. Recheck: waiting screen, no add box, no anomaly. `pubky://i9cu58ihjxxx9o6pzmfzpkwhkmqc9uzoi9fnngucmckn84k5mmdy/pub/list.mayfly.example/mayfly/chains/7YQWSV42H01EAB1K7J4366NP64/`. |
 | B2 | pass | B saw Join, both members, unanimity, no watchman, and was not seated. |
 | B3 | pass | Stranger `6dg5mnoi8du4ibxar7wqm8fnthoqz9hsrggxxbtyrpyggtj8ru7o` saw "Not your list" and no Join button. |
 | B4 | pass | Both apps showed an empty list and both members joined. Viewer: genesis committed, two seats, witnesses none engaged, no red file rows. |
@@ -239,32 +239,32 @@ Stranger, and member C for later sections: `6dg5mnoi8du4ibxar7wqm8fnthoqz9hsrggx
 | B13 | pass | Spaces left Add disabled. Submitting the form did not add a row. |
 | B14 | pass | 500-character item confirmed. Both apps and the viewer show all 500 characters. |
 | B15 | pass | Reload kept ohxc9q… on A and pka7am… on B, the same items, and no join screen. |
-| B16 | blocked | No edit control on an item. |
-| B17 | blocked | No edit control on an item. |
-| B18 | blocked | No edit control on an item. |
-| B19 | blocked | No edit control on an item. |
+| B16 | pass | First session: no edit control. Recheck: A edited Milk to Oat milk. B confirmed. Still unticked. |
+| B17 | pass | B edited Oat milk to Semi-skimmed. A confirmed. Text replaced in place. |
+| B18 | pass | A blank edit left Save disabled. The text stayed Semi-skimmed. |
+| B19 | pass | Both edited the same item before either confirmed. Full cream survived. No anomaly. |
 | C1 | pass | Archived the B chain. No decision card. Add, tick and remove disabled. Items kept their text. There is no edit control to disable. |
 | C2 | pass | On that archived list the add box is absent, and there is no edit control. |
-| C3 | fail | Chain `pubky://ohxc9q6kgnrfyw1nhfb5so1mygbjssrqzfeyimxtohwms999foso/pub/list.mayfly.example/mayfly/chains/3W4DBQ43MW6SVKNGG1QVCGQFMR/`. B got a decision card and Apples stayed, but the page also showed UnconfirmedProposal at change 2. |
-| C4 | fail | Same chain. After Refuse the card returned with Obstruction and UnconfirmedProposal. A later add of Pears did confirm, and the card then left. |
-| C5 | fail | Both apps showed the list closed, with add and ticks gone. Viewer: final, polling stopped, a close link. Viewer and a reloaded B also show Obstruction at change 2, from the refused close. |
-| C6 | fail | B's reload showed the closed list, not Join. It also showed Obstruction by B at change 2. |
-| D1 | fail | Chain `pubky://ohxc9q6kgnrfyw1nhfb5so1mygbjssrqzfeyimxtohwms999foso/pub/list.mayfly.example/mayfly/chains/BYGWH0VPKH2S80WGB6DG5Z944G/`. After only B joined, C stayed not joined and Milk did not confirm, but both apps offered Add and showed genesis `2/0` instead of a waiting screen. The Milk add disappeared with no error. |
-| D2 | fail | Join stayed on "Joining…" for over 20 seconds, twice, with no error. Much later C was seated: all three showed an empty list, and the viewer has three seats and no anomaly. |
-| D3 | fail | After that, A's Add of Milk returned "The list is settling a change; try again in a moment" on two loads. Milk never appeared, pending or confirmed. |
-| D4 | blocked | Not run. D3 never proposed Milk, so there was no 2-of-3 row for C to confirm. |
-| D5 | blocked | Not run. Depends on D3. |
-| D6 | blocked | Not run. Depends on D3. |
-| D7 | blocked | Not run. Depends on D3. |
-| E1 | pass | First Create stayed on "Creating…" until the tab was left. A fresh home page created `pubky://ohxc9q6kgnrfyw1nhfb5so1mygbjssrqzfeyimxtohwms999foso/pub/list.mayfly.example/mayfly/chains/Q3242Y4FYNWYYRJR43M48HM11R/`. B's join screen said "1 watchman keeping time". |
+| C3 | pass | First session (`…/chains/3W4DBQ43MW6SVKNGG1QVCGQFMR/`): decision card plus UnconfirmedProposal. Recheck: decision card, Apples stayed, no "Something to look at". `pubky://i9cu58ihjxxx9o6pzmfzpkwhkmqc9uzoi9fnngucmckn84k5mmdy/pub/list.mayfly.example/mayfly/chains/1PEDXWYYT2XF8RXQBN4SPQ9RY0/`. |
+| C4 | pass | First session: Refuse came back as Obstruction. Recheck: the card cleared, no Obstruction, and Pears then confirmed. |
+| C5 | pass | First session: closed, but the viewer kept Obstruction from the refused close, and the home screen listed the chain twice. Recheck: both apps closed. Viewer final, polling stopped, a close in the timeline, no Obstruction. Home listed that chain once, marked finished. |
+| C6 | pass | First session: closed list, plus Obstruction. Recheck: B reopened the invite and saw the closed list, not Join, and no Obstruction. |
+| D1 | pass | First session (`…/chains/BYGWH0VPKH2S80WGB6DG5Z944G/`): add box and a vanished add while C had not joined. Recheck: after only B joined, A still waited, C marked not joined, no add box. `pubky://i9cu58ihjxxx9o6pzmfzpkwhkmqc9uzoi9fnngucmckn84k5mmdy/pub/list.mayfly.example/mayfly/chains/C7VZ7JNX6KJKRJZ5GEZHQE03E8/`. |
+| D2 | pass | First session: Join sat on "Joining…" for over 20 seconds. Recheck, separate profiles: C joined in 810ms, B in 1608ms. All three then showed an empty list. |
+| D3 | pass | First session: Add failed with "settling a change" and Milk never appeared. Recheck: Milk confirmed by all three, no settling error. |
+| D4 | unchecked | Not part of the recheck. The D3 blocker is gone. |
+| D5 | unchecked | Not part of the recheck. |
+| D6 | unchecked | Not part of the recheck. |
+| D7 | unchecked | Not part of the recheck. |
+| E1 | pass | First attempt stayed on "Creating…" in a background tab; a fresh page then created `…/chains/Q3242Y4FYNWYYRJR43M48HM11R/`. Recheck, profile in the foreground: create naming the watchman returned in 415ms. `pubky://i9cu58ihjxxx9o6pzmfzpkwhkmqc9uzoi9fnngucmckn84k5mmdy/pub/list.mayfly.example/mayfly/chains/Q4MAKRM8WKWVQH0553P1B1NQX4/`. |
 | E2 | pass | After B joined, `/status` watched that chain, receipts 2, errors 0. Both pages mention a watchman. Viewer: one witness, `engage.jws` signature ok, no red row. |
 | E3 | pass | Both showed Milk. Status witnessed 1/1. Viewer add row witnessed 1/1, receipt `00000001-…` signature ok. |
 | E4 | pass | Milk gone on both. Receipts moved from 4 to 6. Errors 0. |
 | E5 | pass | After restart, `/status` pubky unchanged and the chain still watched. Neither list gained an anomaly. |
 | F1 | pass | Chain `pubky://ohxc9q6kgnrfyw1nhfb5so1mygbjssrqzfeyimxtohwms999foso/pub/list.mayfly.example/mayfly/chains/WG7SNGX0G3QTWXANDRXFM3FBZ0/`. Rice confirmed, no anomaly. Viewer: none engaged, add witnessed 0/0. `/status` watching is empty. |
-| G1 | fail | Chain `pubky://ohxc9q6kgnrfyw1nhfb5so1mygbjssrqzfeyimxtohwms999foso/pub/list.mayfly.example/mayfly/chains/YDQPD1X8FWE2YPXMBT4VMQEDAC/`. Viewer: three seats, one witness, genesis witnessed 1/1. Until a reload, A and C still showed B as not joined and genesis `2/0`. A's Add of Milk then left the form disabled for 25 seconds, with no item and no error. A further reload of A stayed on "Loading…". |
-| G2 | blocked | Not run. G1 never confirmed an item, and A's page stopped responding. |
-| G3 | blocked | Not run. Depends on G1. |
+| G1 | pass | First session (`…/chains/YDQPD1X8FWE2YPXMBT4VMQEDAC/`): A and C kept showing B as not joined until a reload, then Add hung and a reload stayed on "Loading…". Recheck, separate profiles: all three converged without a reload and Milk confirmed. `pubky://i9cu58ihjxxx9o6pzmfzpkwhkmqc9uzoi9fnngucmckn84k5mmdy/pub/list.mayfly.example/mayfly/chains/AT0EXCGZNXJJV0BBTG82S08RJM/`. |
+| G2 | unchecked | Not part of the recheck. The G1 blocker is gone. |
+| G3 | unchecked | Not part of the recheck. |
 | H1 | pass | B chain after B15: timeline, parties, seats, files, live indicator. |
 | H2 | pass | `links/00000001-38WX39QM115Q9RD5.jws` opened the same chain. No error. |
 | H3 | pass | Invite with and without a trailing slash both opened the chain. |
@@ -295,8 +295,10 @@ Stranger, and member C for later sections: `6dg5mnoi8du4ibxar7wqm8fnthoqz9hsrggx
 
 ## Failures
 
-Collected from the session log so they can be reviewed together. A later pass updates the row
-and this list.
+Collected from the first session. Rechecked on 23 Sep 2026 with one Chrome profile per
+member (and a fourth for the viewer), against the fixes below. Every item passed. The
+session log rows carry both the first result and the recheck. G2, G3 and D4–D7 were not
+part of the recheck; they are unchecked now that their blockers are gone.
 
 1. **A5.** Typing only your own pubky is not treated as an empty members field. The page shows `genesis invalid: fewer than two parties`.
 2. **A6.** A members field containing `not-a-pubky` still writes a chain, and that chain stays on Your lists. Chain `pubky://3mak4zm1h5f8kzbbqmh5zjdsk6m1qg631xbbt67zgpbgesdcoiry/pub/list.mayfly.example/mayfly/chains/8MS0ND8DKB5PA07RDPC99BE4ER/`.
@@ -310,6 +312,61 @@ and this list.
 10. **D3.** After everyone had joined, Add failed with "The list is settling a change; try again in a moment" and Milk was never proposed.
 11. **E1, first attempt.** Creating a list that names the watchman stayed on "Creating…" with no error while that tab sat in the background. A fresh page created the list, so this may be a stalled tab rather than a refused create. The retry is E1 pass.
 12. **G1.** On `pubky://ohxc9q6kgnrfyw1nhfb5so1mygbjssrqzfeyimxtohwms999foso/pub/list.mayfly.example/mayfly/chains/YDQPD1X8FWE2YPXMBT4VMQEDAC/` the viewer seated all three and one watchman, but A and C kept showing B as not joined until a reload. A's Add of Milk then never returned: the form stayed disabled, no item was written, and a reload stayed on "Loading…". G2 and G3 were not run.
+
+### What was changed for them
+
+Recorded here so the recheck knew what it was looking at. The session log now has both the
+first result and the recheck.
+
+- **1 (A5).** `Home.tsx` drops the creator's own pubky from the members field, so a field
+  containing only that pubky is empty and is refused before anything is written. Recheck:
+  refused as empty, no list written.
+- **2 (A6).** The same parser refuses anything that is not a z32 pubky before a chain is
+  written, and the core's genesis safety check now refuses a party or witness that is not a
+  pubky, so no client can write such a genesis. Recheck: `not-a-pubky` refused, no chain
+  written.
+- **3 (B1).** The list page treats a chain whose genesis is not yet committed as waiting,
+  whoever has signed: the creator sees "Waiting for the others" and no add box.
+  `UnconfirmedProposal` attributed to nobody is no longer listed under "Something to look at".
+  Recheck: waiting screen, no add box, no anomaly.
+- **4 (B16–B19).** Each item has an edit control (✎): inline text, Save on Enter, Cancel on
+  Escape, blank or unchanged text refused. It sends `list/1`'s `edit`, keeping id, place and
+  tick. Disabled once archived or closed, like tick and remove. Recheck: Oat milk, then
+  Semi-skimmed, a blank edit refused, and a contested edit settled on Full cream with no
+  anomaly.
+- **5 (C3).** `UnconfirmedProposal` attributed to nobody is the pending state the page already
+  shows, so it is no longer listed under "Something to look at". The viewer still shows it.
+  Recheck: the decision card appeared and Apples stayed, with nothing under "Something to look
+  at".
+- **6 (C4–C6).** Protocol change, recorded in the spec's obstruction paragraph: refusing a
+  `close` with reason `agreed` is consent withheld, and a verifier does not count it as
+  obstruction. Covered by `refusing_an_agreed_close_is_not_obstruction` in the core tests.
+  The decision card now clears as soon as it is answered, and is dropped once I have voted in
+  the round or the round has died. The proposer, when the round dies and it is their turn, is
+  asked "put it forward again, or let it go" rather than being shown their own proposal to
+  agree with. Recheck: Refuse cleared the card and left no Obstruction, a later add confirmed,
+  and the agreed close was final in the viewer and on reopening, with no Obstruction.
+- **7 (home screen).** `mark_finished` removes the active marker whether or not this client
+  wrote it, and "Your lists" shows one row per chain, reading finished first. Recheck: the
+  closed chain appeared once, marked finished.
+- **8 (D1).** Same waiting screen as B1, so an add is not offered until every member has
+  joined. Recheck: after only B joined, A still waited, C was marked not joined, and there was
+  no add box.
+- **9 (D2).** The likely cause of the long "Joining…" was connection exhaustion: each live
+  event stream holds an HTTP connection to the homeserver, browsers allow about six per host,
+  and several list tabs plus the viewer against one local homeserver were at that limit.
+  Streams that were still being opened when the seat set changed were never closed. The page
+  now opens no stream for its own folder and closes a stream that finished opening after the
+  seat set changed. Recheck, separate Chrome profiles: C joined in 810ms.
+- **10 (D3).** Same connection changes as D2, and a user action with no answer in twenty
+  seconds releases the form and says so. The stalled call itself cannot be cancelled; the
+  message says to reload if it persists. Recheck: Milk confirmed by all three, no settling
+  error.
+- **11 (E1).** Same connection changes and the twenty-second timeout. Recheck, in the
+  foreground: create naming the watchman returned in 415ms.
+- **12 (G1).** Same connection changes, and the list page now treats an uncommitted genesis as
+  waiting for everyone who has signed, so a member who has joined early is not shown as still
+  missing. Recheck, separate profiles: all three converged without a reload and Milk confirmed.
 
 ## Not in this session
 

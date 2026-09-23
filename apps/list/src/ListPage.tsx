@@ -2,13 +2,15 @@ import { useState } from "react";
 import type { Session } from "@synonymdev/pubky";
 
 import { copy, partyLabel, short } from "./format";
-import type { CandidateView, ChainView } from "./mayfly";
+import type { CandidateView } from "./mayfly";
 import { VIEWER_URL } from "./pubky";
 import { useList } from "./useList";
 
 export function ListPage({ session, url, onBack }: { session: Session; url: string; onBack: () => void }) {
   const list = useList(session, url);
   const [text, setText] = useState("");
+  const [editing, setEditing] = useState<string>();
+  const [draft, setDraft] = useState("");
   const [copied, setCopied] = useState(false);
   const v = list.view;
   // Genesis is not committed until every member confirms it, so the parties come from the
@@ -47,6 +49,9 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
   }
 
   const mine = named.indexOf(list.me);
+  // Genesis commits only when every member has confirmed it (§8.1); until then the view has
+  // no parties and nothing can be added, whoever has already signed.
+  const committed = !!v && v.parties.length > 0;
 
   if (mine < 0) {
     return (
@@ -64,18 +69,19 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
     );
   }
 
-  if (!list.seated) {
+  if (!list.seated || !committed) {
     const watchmen = list.arrangement?.witnesses.length ?? v?.engaged.length ?? 0;
     return (
       <main className="narrow">
         {header}
         <section className="card">
-          {mine === 0 ? (
+          {list.seated ? (
             <>
               <h2>Waiting for the others</h2>
               <p>
-                You created this list. Nothing can be added until every member has joined and
-                confirmed the start. Send them the invite link.
+                {mine === 0 ? "You created this list. " : "You have joined. "}
+                Nothing can be added until every member has joined and confirmed the start.
+                {mine === 0 ? " Send them the invite link." : ""}
               </p>
             </>
           ) : (
@@ -92,7 +98,7 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
             </>
           )}
           <Members parties={named} seated={v?.seats ?? []} me={list.me} />
-          {mine > 0 && (
+          {!list.seated && mine > 0 && (
             <button onClick={list.join} disabled={list.busy}>
               {list.busy ? "Joining…" : "Join"}
             </button>
@@ -113,9 +119,13 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
   }
 
   const items = v.state?.items ?? [];
-  const pending = v.open?.candidates ?? [];
+  const pending = (v.open?.candidates ?? []).filter((k) => k.round === v.open?.round);
   const closed = v.is_final || v.state?.archived;
   const waiting = v.status.kind === "stalled" ? v.status.parties : [];
+  // A proposal nobody has confirmed yet is what the pending rows already show; the verifier
+  // records it as an anomaly attributed to nobody. Only attributed anomalies, and tampered
+  // mirrors, are something to look at.
+  const anomalies = v.anomalies.filter((a) => !(a.kind === "UnconfirmedProposal" && !a.against_pubky));
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -123,6 +133,20 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
     if (!t) return;
     setText("");
     void list.add(t);
+  };
+
+  const startEdit = (id: string, current: string) => {
+    setEditing(id);
+    setDraft(current);
+  };
+  const saveEdit = () => {
+    const id = editing;
+    const t = draft.trim();
+    setEditing(undefined);
+    if (!id || !t) return;
+    const current = items.find((it) => it.id === id)?.text;
+    if (t === current) return;
+    void list.edit(id, t);
   };
 
   return (
@@ -134,32 +158,71 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
         </h1>
         <Members parties={named} seated={v.seats} me={list.me} />
         <ul className="items">
-          {items.map((it) => (
-            <li key={it.id} className={it.ticked ? "ticked" : ""}>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={it.ticked}
+          {items.map((it) =>
+            editing === it.id ? (
+              <li key={it.id} className="editing">
+                <form
+                  className="row"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    saveEdit();
+                  }}
+                >
+                  <input
+                    autoFocus
+                    aria-label="Edit item"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setEditing(undefined);
+                    }}
+                    disabled={list.busy}
+                  />
+                  <button type="submit" disabled={list.busy || !draft.trim() || draft.trim() === it.text}>
+                    Save
+                  </button>
+                  <button type="button" className="ghost" onClick={() => setEditing(undefined)}>
+                    Cancel
+                  </button>
+                </form>
+              </li>
+            ) : (
+              <li key={it.id} className={it.ticked ? "ticked" : ""}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={it.ticked}
+                    disabled={!!closed || list.busy}
+                    onChange={(e) => void list.tick(it.id, e.target.checked)}
+                  />
+                  <span>{it.text}</span>
+                </label>
+                <button
+                  className="small ghost"
+                  title="edit"
+                  aria-label={`edit ${it.text}`}
                   disabled={!!closed || list.busy}
-                  onChange={(e) => void list.tick(it.id, e.target.checked)}
-                />
-                <span>{it.text}</span>
-              </label>
-              <button
-                className="small ghost"
-                title="remove"
-                disabled={!!closed || list.busy}
-                onClick={() => void list.remove(it.id)}
-              >
-                ×
-              </button>
-            </li>
-          ))}
+                  onClick={() => startEdit(it.id, it.text)}
+                >
+                  ✎
+                </button>
+                <button
+                  className="small ghost"
+                  title="remove"
+                  aria-label={`remove ${it.text}`}
+                  disabled={!!closed || list.busy}
+                  onClick={() => void list.remove(it.id)}
+                >
+                  ×
+                </button>
+              </li>
+            ),
+          )}
           {pending.map((k) => (
             <li key={k.hash} className="pending">
               <span className="dot" />
               <span>
-                <Pending k={k} v={v} me={list.me} />
+                <Pending k={k} parties={named} me={list.me} />
               </span>
             </li>
           ))}
@@ -205,11 +268,32 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
           <h2>Needs your answer</h2>
           {list.decisions.map((d) => {
             const k = d.candidate.candidate;
+            const who = partyLabel(named, k.author, list.me);
+            const verb = k.kind === "close" ? "close this list for good" : `${k.kind} this list`;
+            if (d.candidate.repropose) {
+              // The round died without confirming it, and I am the one to propose next.
+              return (
+                <div key={k.hash} className="ask">
+                  <p>
+                    {who === "you" ? "Your" : `${who}'s`} proposal to <b>{verb}</b> was not confirmed
+                    in that round. It is your turn: put it forward again, or let it go.
+                  </p>
+                  <div className="row">
+                    <button onClick={() => void list.repropose(k.hash)} disabled={list.busy}>
+                      Propose again
+                    </button>
+                    <button className="ghost" onClick={() => void list.pass()} disabled={list.busy}>
+                      Let it go
+                    </button>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={k.hash} className="ask">
                 <p>
-                  {partyLabel(v.parties, k.author, list.me)} proposes to <b>{k.kind}</b> this list
-                  {k.kind === "close" ? " for good" : ""}. {k.votes} of {v.parties.length} have agreed.
+                  {who === "you" ? "You propose" : `${who} proposes`} to <b>{verb}</b>. {k.votes} of{" "}
+                  {named.length} have agreed.
                 </p>
                 <div className="row">
                   <button onClick={() => void list.confirm(k.hash)} disabled={list.busy}>
@@ -243,7 +327,7 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
         </section>
       )}
 
-      {v.anomalies.length + v.suspects.length > 0 && (
+      {anomalies.length + v.suspects.length > 0 && (
         <section className="card warn">
           <h2>Something to look at</h2>
           <ul>
@@ -252,10 +336,10 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
                 {short(s.owner)} holds a file whose bytes do not match its name: {s.path.split("/").pop()}
               </li>
             ))}
-            {v.anomalies.map((a, i) => (
+            {anomalies.map((a, i) => (
               <li key={i}>
                 {a.kind}
-                {a.against_pubky ? ` by ${partyLabel(v.parties, v.parties.indexOf(a.against_pubky), list.me)}` : ""}
+                {a.against_pubky ? ` by ${partyLabel(named, named.indexOf(a.against_pubky), list.me)}` : ""}
                 {a.seq != null ? ` at change ${a.seq}` : ""}
               </li>
             ))}
@@ -292,12 +376,11 @@ function Members({
   );
 }
 
-function Pending({ k, v, me }: { k: CandidateView; v: ChainView; me: string }) {
-  const who = partyLabel(v.parties, k.author, me);
-  const need = v.parties.length;
+function Pending({ k, parties, me }: { k: CandidateView; parties: string[]; me: string }) {
+  const who = partyLabel(parties, k.author, me);
   return (
     <>
-      {who}: <b>{k.kind}</b> · {k.votes}/{need} confirmed
+      {who}: <b>{k.kind}</b> · {k.votes}/{parties.length} confirmed
     </>
   );
 }

@@ -80,6 +80,8 @@ ul.items li input[type="checkbox"] { width: 20px; height: 20px; accent-color: va
 ul.items li.ticked span { text-decoration: line-through; color: var(--dim); }
 ul.items li.pending { color: var(--pending); font-size: 15px; }
 ul.items li.pending .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--pending); margin: 0 5px; flex: none; }
+ul.items li.editing form.row { flex: 1; margin: 0; }
+ul.items li.editing input { font-size: 18px; }
 ul.lists li { padding: 6px 0; }
 
 .status { color: var(--dim); font-size: 14px; margin: 10px 0 0; }

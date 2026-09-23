@@ -365,9 +365,12 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         }
         let body = self.chain_url(&self.initiator).into_bytes();
         self.put_mine(finished, body).await?;
-        if self.cache.remove(&(me, active.clone())).is_some() {
-            self.store.delete(&active).await?;
-        }
+        // The active marker may predate this client (written in an earlier session), so it is
+        // not necessarily in the cache; remove it from the homeserver regardless. A marker
+        // that is already gone is not an error worth stopping for: the finished marker is
+        // written, and the next sync of the index reads finished before active.
+        self.cache.remove(&(me, active.clone()));
+        let _ = self.store.delete(&active).await;
         Ok(())
     }
 

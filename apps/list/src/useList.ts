@@ -24,6 +24,36 @@ import { pubky } from "./pubky";
 /** Between timer-driven act() calls, in milliseconds. Events wake the loop sooner. */
 const TICK_MS = 3_000;
 
+/**
+ * How long a user action may take before the page gives up waiting and says so. The call is
+ * not cancelled (the SDK has no cancellation), but the form is released and the user is told;
+ * the client stays busy until the homeserver answers, and a reload starts afresh.
+ */
+const ACTION_TIMEOUT_MS = 20_000;
+
+class Timeout extends Error {
+  constructor() {
+    super(`no answer from the homeserver in ${ACTION_TIMEOUT_MS / 1000} seconds; reload if this continues`);
+    this.name = "Timeout";
+  }
+}
+
+function withTimeout<T>(p: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Timeout()), ACTION_TIMEOUT_MS);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
 export interface Decision {
   candidate: ActionView & { kind: "decision" };
   seenAt: number;
@@ -46,12 +76,17 @@ export interface ListHandle {
   lastActions: ActionView[];
   join(): Promise<void>;
   add(text: string): Promise<void>;
+  edit(id: string, text: string): Promise<void>;
   tick(id: string, on: boolean): Promise<void>;
   remove(id: string): Promise<void>;
   archive(): Promise<void>;
   close(): Promise<void>;
   confirm(hash: string): Promise<void>;
   reject(hash: string): Promise<void>;
+  /** After a dead round, as the designated proposer: put `earlier` forward again (§6.4). */
+  repropose(earlier: string): Promise<void>;
+  /** After a dead round, as the designated proposer: let it go and pass the round (§6.4). */
+  pass(): Promise<void>;
   refresh(): Promise<void>;
 }
 
@@ -113,14 +148,30 @@ export function useList(session: Session, url: string): ListHandle {
       const v = c.view() as ChainView | undefined;
       setView(v);
       setArrangement(c.arrangement() as Arrangement | undefined);
-      setDecisions((prev) => prev.filter((d) => v?.open?.candidates.some((k) => k.hash === d.candidate.candidate.hash)));
+      // A decision is live while its candidate is still up for a vote in the current round
+      // and I have not voted in that round. A card for a round that has died, or for a
+      // question I have already answered, is stale.
+      setDecisions((prev) =>
+        prev.filter((d) => {
+          const open = v?.open;
+          if (!open) return false;
+          const k = d.candidate.candidate;
+          const mine = v?.parties.indexOf(me) ?? -1;
+          const voted = open.voters.some(([round, who]) => round === open.round && who.includes(mine));
+          if (voted) return false;
+          const live = open.candidates.some((c) => c.hash === k.hash);
+          // A re-proposal question is about a candidate from the dead round; an ordinary one
+          // must be in the current round.
+          return live && (d.candidate.repropose || k.round === open.round);
+        }),
+      );
       setError(undefined);
     } catch (e) {
       if (alive.current && !transient(e)) setError(message(e));
     } finally {
       inFlight.current = false;
     }
-  }, []);
+  }, [me]);
 
   // Open the client once per (session, url).
   useEffect(() => {
@@ -156,7 +207,10 @@ export function useList(session: Session, url: string): ListHandle {
     return () => clearInterval(t);
   }, [act]);
 
-  // Live: one event stream per seated member's homeserver folder; any event wakes act().
+  // Live: one event stream per other member's homeserver folder; any event wakes act(). My
+  // own writes call act() directly, so my folder needs no stream. Each stream holds an HTTP
+  // connection open, and a browser allows only a few per host, so streams are opened
+  // sparingly and always closed when the seat set changes or the page leaves the list.
   const seatKey = view?.seats.map((s) => `${s.pubky}:${s.paths.join(",")}`).join("|") ?? "";
   useEffect(() => {
     if (!view || !seatKey) return;
@@ -164,6 +218,7 @@ export function useList(session: Session, url: string): ListHandle {
     const readers: ReadableStreamDefaultReader<unknown>[] = [];
     let stopped = false;
     for (const seat of view.seats) {
+      if (seat.pubky === me) continue;
       for (const path of seat.paths) {
         (async () => {
           try {
@@ -173,6 +228,12 @@ export function useList(session: Session, url: string): ListHandle {
               .path(`${path}chains/${chain}/`)
               .subscribe();
             const reader = stream.getReader();
+            if (stopped) {
+              // The effect was torn down while the subscription was being opened: release the
+              // connection now rather than leak it.
+              void reader.cancel().catch(() => undefined);
+              return;
+            }
             readers.push(reader);
             for (;;) {
               const { done } = await reader.read();
@@ -189,7 +250,7 @@ export function useList(session: Session, url: string): ListHandle {
       stopped = true;
       for (const r of readers) void r.cancel().catch(() => undefined);
     };
-  }, [seatKey, view?.chain, act]);
+  }, [seatKey, view?.chain, act, me]);
 
   /** A user action: run it, then act() so confirmations and mirrors follow at once. */
   const run = useCallback(
@@ -197,17 +258,30 @@ export function useList(session: Session, url: string): ListHandle {
       const c = client.current;
       if (!c) return;
       setBusy(true);
+      let timedOut = false;
       try {
-        await f(c);
+        await withTimeout(f(c));
         setError(undefined);
       } catch (e) {
+        timedOut = e instanceof Timeout;
         setError(transient(e) ? "The list is settling a change; try again in a moment." : message(e));
       } finally {
         setBusy(false);
       }
-      await act();
+      // After a timeout the client is still inside the stalled call; act() would only report
+      // Busy. The timer keeps trying.
+      if (!timedOut) await act();
     },
     [act],
+  );
+
+  /** Answer a decision card: the card goes at once; act() then shows what follows. */
+  const answer = useCallback(
+    (hash: string, f: (c: ChainClient) => Promise<unknown>) => {
+      setDecisions((prev) => prev.filter((d) => d.candidate.candidate.hash !== hash));
+      return run(f);
+    },
+    [run],
   );
 
   const myIndex = view?.parties.indexOf(me);
@@ -225,12 +299,18 @@ export function useList(session: Session, url: string): ListHandle {
     lastActions,
     join: () => run((c) => c.join()),
     add: (text) => run((c) => c.proposeBody({ kind: "add", id: itemId(), text })),
+    edit: (id, text) => run((c) => c.proposeBody({ kind: "edit", id, text })),
     tick: (id, on) => run((c) => c.proposeBody({ kind: on ? "tick" : "untick", id })),
     remove: (id) => run((c) => c.proposeBody({ kind: "remove", id })),
     archive: () => run((c) => c.proposeBody({ kind: "archive" })),
     close: () => run((c) => c.proposeClose("agreed")),
-    confirm: (hash) => run((c) => c.confirm(hash)),
-    reject: (hash) => run((c) => c.reject(hash)),
+    confirm: (hash) => answer(hash, (c) => c.confirm(hash)),
+    reject: (hash) => answer(hash, (c) => c.reject(hash)),
+    repropose: (earlier) => answer(earlier, (c) => c.repropose(earlier)),
+    pass: () => {
+      setDecisions((prev) => prev.filter((d) => !d.candidate.repropose));
+      return run((c) => c.pass());
+    },
     refresh: act,
   };
 }
@@ -256,16 +336,20 @@ export async function myLists(session: Session): Promise<{ url: string; finished
   const p = await party(session);
   const me = session.info.publicKey.z32();
   const folder = `/pub/${p.signer.clientId}/mayfly/`;
-  const out: { url: string; finished: boolean }[] = [];
+  // One row per chain. Finished is read first so that, if an active marker was left behind,
+  // the chain is still shown once and as finished.
+  const byUrl = new Map<string, boolean>();
   for (const [sub, finished] of [
-    ["index/active/", false],
     ["index/finished/", true],
+    ["index/active/", false],
   ] as const) {
     const listed = await p.store.list(me, folder + sub);
     for (const entry of listed) {
       const bytes = await p.store.get(me, entry.path);
-      if (bytes) out.push({ url: new TextDecoder().decode(bytes).trim(), finished });
+      if (!bytes) continue;
+      const url = new TextDecoder().decode(bytes).trim();
+      if (!byUrl.has(url)) byUrl.set(url, finished);
     }
   }
-  return out;
+  return [...byUrl].map(([url, finished]) => ({ url, finished }));
 }

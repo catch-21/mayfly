@@ -37,12 +37,16 @@ branch only.
   confirm every change. The result is an invite link, `pubky://…/mayfly/chains/<id>/`.
 - **Join** shows the list's terms — members, unanimity, watchman — and signs your agreement
   only when you say so.
-- **Add, tick, untick, remove** are proposals; the others' apps confirm them inside `act()`
-  and the item appears as confirmed. A proposal not yet confirmed shows in amber with its
-  vote count. Two members proposing at once resolves itself through a dead round (§6.4), with
-  no user involvement.
+- **Add, edit, tick, untick, remove** are proposals; the others' apps confirm them inside
+  `act()` and the item appears as confirmed. An edit changes an item's text and keeps its id,
+  place and tick. A proposal not yet confirmed shows in amber with its vote count. Two members
+  proposing at once resolves itself through a dead round (§6.4), with no user involvement.
 - **Archive** stops changes and keeps the list; **close** ends the chain and needs every
-  member's agreement, which arrives as a decision card in their app.
+  member's agreement, which arrives as a decision card in their app. Refusing a close is
+  consent withheld, not obstruction: the list carries on.
+- A round that dies without confirming a proposal puts a question to the next designated
+  proposer: put it forward again, or let it go. A user action that gets no answer from the
+  homeserver in twenty seconds releases the form and says so.
 - Anything the verifier attributes to a member — a tampered mirror, an equivocation — is
   listed at the bottom, with the viewer for the evidence.
 

@@ -1,9 +1,42 @@
 import { useEffect, useState } from "react";
-import type { Session } from "@synonymdev/pubky";
+import { PublicKey, type Session } from "@synonymdev/pubky";
 
 import { copy, short } from "./format";
 import { parseChainUrl } from "./mayfly";
 import { createList, myLists } from "./useList";
+
+/**
+ * The other members, from the textarea: split on whitespace and commas, drop the creator's
+ * own pubky and repeats, and refuse anything that is not a pubky before a chain is written.
+ */
+export function parseMembers(raw: string, me: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const piece of raw.split(/[\s,]+/)) {
+    const p = piece.trim();
+    if (!p || p === me || seen.has(p)) continue;
+    try {
+      PublicKey.from(p);
+    } catch {
+      throw new Error(`"${p}" is not a pubky`);
+    }
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
+function parseWatchman(raw: string, me: string): string[] {
+  const w = raw.trim();
+  if (!w) return [];
+  if (w === me) throw new Error("you cannot be your own watchman");
+  try {
+    PublicKey.from(w);
+  } catch {
+    throw new Error(`watchman "${w}" is not a pubky`);
+  }
+  return [w];
+}
 
 export function Home({ session, onOpen }: { session: Session; onOpen: (url: string) => void }) {
   const me = session.info.publicKey.z32();
@@ -25,12 +58,9 @@ export function Home({ session, onOpen }: { session: Session; onOpen: (url: stri
     setBusy(true);
     setError(undefined);
     try {
-      const others = members
-        .split(/[\s,]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const others = parseMembers(members, me);
       if (others.length === 0) throw new Error("name at least one other member by pubky");
-      const url = await createList(session, others, witness.trim() ? [witness.trim()] : []);
+      const url = await createList(session, others, parseWatchman(witness, me));
       onOpen(url);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

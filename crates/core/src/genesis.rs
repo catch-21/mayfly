@@ -116,8 +116,22 @@ impl Genesis {
         }
         let mut seen = std::collections::HashSet::new();
         for p in &self.parties {
+            if crate::keys::parse_z32(&p.pubky).is_err() {
+                return Err(Error::Genesis(format!(
+                    "party {:?} is not a pubky",
+                    p.pubky
+                )));
+            }
             if !seen.insert(&p.pubky) {
                 return Err(Error::Genesis(format!("duplicate party {}", p.pubky)));
+            }
+        }
+        for w in &self.witnesses {
+            if crate::keys::parse_z32(&w.pubky).is_err() {
+                return Err(Error::Genesis(format!(
+                    "witness {:?} is not a pubky",
+                    w.pubky
+                )));
             }
         }
         if self.parties[0].kid.is_none() {

@@ -1374,6 +1374,19 @@ impl<'a, R: Rules> Fold<'a, R> {
                 )
             })
             .collect();
+        // A close by agreement asks for consent (§6.8). Refusing it is consent withheld, not
+        // obstruction: nobody owes the chain their agreement to end it.
+        let consent: BTreeSet<Hash> = view
+            .candidates
+            .iter()
+            .filter(|c| {
+                Kind::parse(&c.link.payload.kind) == Kind::Close
+                    && serde_json::from_value::<CloseBody>(c.link.payload.body.clone())
+                        .map(|b| b.reason == CloseReason::Agreed)
+                        .unwrap_or(false)
+            })
+            .map(|c| c.link.hash)
+            .collect();
 
         for c in self.confirms_by_seq.get(&seq).cloned().unwrap_or_default() {
             let Some(&party) = keys.get(&c.payload.kid) else {
@@ -1471,7 +1484,10 @@ impl<'a, R: Rules> Fold<'a, R> {
                         continue;
                     }
                     view.skips.push((party, round, r.hash));
-                } else if is_plain && proposals_in_round.len() == 1 {
+                } else if is_plain
+                    && proposals_in_round.len() == 1
+                    && !consent.contains(&proposals_in_round[0])
+                {
                     // A vote for nothing against the sole valid proposal (§6.3).
                     self.anomaly(
                         Some(&r.payload.kid),
@@ -1481,7 +1497,10 @@ impl<'a, R: Rules> Fold<'a, R> {
                     );
                 }
             } else if let Ok(target) = Hash::parse(&r.payload.link) {
-                if by_hash.contains_key(&target) && proposals_in_round.len() == 1 {
+                if by_hash.contains_key(&target)
+                    && proposals_in_round.len() == 1
+                    && !consent.contains(&target)
+                {
                     self.anomaly(
                         Some(&r.payload.kid),
                         seq,
