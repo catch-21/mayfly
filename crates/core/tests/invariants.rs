@@ -646,6 +646,51 @@ fn recover_delay_by_witness_quorum() {
     assert!(v.anomalies.is_empty(), "{:?}", v.anomalies);
 }
 
+/// §6.7 / §11.2: one witness who times the confirming vote before the delay does not make a
+/// recover premature. Two of three honoured it; the dissenter blocks adjudication, so the
+/// verdict stays asserted and the recover commits.
+#[test]
+fn one_early_witness_does_not_invalidate_a_recover() {
+    let delay = pubky_mayfly::genesis::MIN_RECOVERY_DELAY_MS;
+    let mut sim = Sim::new(Tally, 3, 3, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    sim.play(&single(0, 3, 1)).unwrap();
+    let r = sim.propose_recover(2, "notes.example").unwrap();
+    sim.witnesses_observe();
+    sim.tick(delay + 60_000);
+    // This witness receipts the confirmations as if they arrived a minute before the recover.
+    sim.witnesses[2].behaviour = WitnessBehaviour::Skewed(-((delay + 120_000) as i64));
+    sim.confirm(0, r).unwrap();
+    sim.witnesses_observe();
+    sim.confirm(1, r).unwrap();
+    sim.witnesses_observe();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes().last(),
+        Some(&r),
+        "a minority clock does not drop the recover"
+    );
+    assert!(
+        v.anomalies
+            .iter()
+            .all(|a| a.kind != AnomalyKind::PrematureRecover),
+        "{:?}",
+        v.anomalies
+    );
+    assert!(
+        matches!(
+            v.recoveries[0].delay,
+            Verdict::Asserted {
+                yes: 2,
+                no: 1,
+                silent: 0
+            }
+        ),
+        "the quorum does not agree: {:?}",
+        v.recoveries[0].delay
+    );
+}
+
 /// §7: a party's records live under the folder they declared; a `recover` moves it, and the
 /// verifier reads every folder a party has declared, in order.
 #[test]
@@ -920,6 +965,63 @@ fn refusing_one_of_two_proposals_is_not_obstruction() {
             .iter()
             .all(|a| a.kind != AnomalyKind::Obstruction),
         "a reject beside a competing proposal is not obstruction: {:?}",
+        v.anomalies
+    );
+}
+
+/// Kill round 0 with two proposals, then let the designated party of round 1 propose alone.
+fn sole_proposal_in_round_one(kind: &str) -> (Sim<Tally>, usize, Hash) {
+    let mut sim = Sim::new(Tally, 2, 0, &["chess.example"], 2);
+    sim.bootstrap().unwrap();
+    sim.propose(0, "add", serde_json::json!({ "n": 1 }))
+        .unwrap();
+    sim.propose(1, "add", serde_json::json!({ "n": 2 }))
+        .unwrap();
+    assert!(sim.round_is_dead());
+    sim.advance_round().unwrap();
+    let designated = sim.designated().unwrap();
+    let link = if kind == "close" {
+        sim.propose_close(designated, pubky_mayfly::record::CloseReason::Agreed)
+            .unwrap()
+    } else {
+        sim.propose(designated, "add", serde_json::json!({ "n": 3 }))
+            .unwrap()
+    };
+    let other = 1 - designated;
+    let key = sim.parties[other].client.clone();
+    let seq = sim.open.seq;
+    let round = sim.open.round;
+    sim.forge_reject(other, &key, seq, round, None);
+    (sim, other, link)
+}
+
+/// §6.3: an empty reject in a round the designated party has already proposed is a vote for
+/// nothing, not a skip. Against an agreed close it is consent withheld.
+#[test]
+fn an_empty_reject_of_an_agreed_close_is_not_obstruction() {
+    let (sim, _, _) = sole_proposal_in_round_one("close");
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert!(
+        v.anomalies
+            .iter()
+            .all(|a| a.kind != AnomalyKind::Obstruction),
+        "withholding consent by an empty reject is not obstruction: {:?}",
+        v.anomalies
+    );
+}
+
+/// §6.3: the same empty reject against the sole ordinary proposal is obstruction. The
+/// agreed-close exemption must not cover every vote for nothing.
+#[test]
+fn an_empty_reject_of_the_sole_proposal_is_obstruction() {
+    let (sim, other, _) = sole_proposal_in_round_one("add");
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert!(
+        v.anomalies.iter().any(|a| {
+            a.kind == AnomalyKind::Obstruction
+                && a.against.as_deref() == Some(sim.parties[other].kid().as_str())
+        }),
+        "an empty reject of the only proposal is obstruction: {:?}",
         v.anomalies
     );
 }

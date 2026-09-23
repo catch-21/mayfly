@@ -162,3 +162,100 @@ impl Genesis {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn z32() -> String {
+        pubky_common::crypto::Keypair::random().public_key().z32()
+    }
+
+    fn party(pubky: String, kid: Option<String>) -> Party {
+        Party {
+            pubky,
+            kid,
+            role: None,
+            path: None,
+        }
+    }
+
+    /// A genesis every safety check accepts, so each refusal below is one change.
+    fn acceptable() -> Genesis {
+        Genesis {
+            rules: "list/1".into(),
+            rules_hash: "list/1-hash".into(),
+            max_body_bytes: 65_536,
+            parties: vec![party(z32(), Some(z32())), party(z32(), None)],
+            nonce: "n".into(),
+            confirm_quorum: 2,
+            witnesses: Vec::new(),
+            recovery_delay_ms: MIN_RECOVERY_DELAY_MS,
+            options: serde_json::Value::Null,
+        }
+    }
+
+    fn know(id: &str) -> Option<String> {
+        (id == "list/1").then(|| "list/1-hash".into())
+    }
+
+    fn refuse(g: &Genesis) -> String {
+        g.check_safety(know, DEFAULT_MAX_BODY_BYTES)
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn check_safety_refuses_an_unsafe_genesis() {
+        acceptable()
+            .check_safety(know, DEFAULT_MAX_BODY_BYTES)
+            .unwrap();
+
+        let mut g = acceptable();
+        g.parties.truncate(1);
+        assert!(refuse(&g).contains("fewer than two parties"));
+
+        let mut g = acceptable();
+        g.parties[1].pubky = "not-a-pubky".into();
+        assert!(refuse(&g).contains("is not a pubky"));
+
+        let mut g = acceptable();
+        g.parties[1].pubky = g.parties[0].pubky.clone();
+        assert!(refuse(&g).contains("duplicate party"));
+
+        let mut g = acceptable();
+        g.witnesses.push(Witness {
+            pubky: "not-a-pubky".into(),
+        });
+        assert!(refuse(&g).contains("witness"));
+        assert!(refuse(&g).contains("is not a pubky"));
+
+        let mut g = acceptable();
+        g.parties[0].kid = None;
+        assert!(refuse(&g).contains("initiator kid missing"));
+
+        let mut g = acceptable();
+        g.confirm_quorum = 1;
+        assert!(refuse(&g).contains("confirm_quorum"));
+
+        let mut g = acceptable();
+        g.rules = "chess/1".into();
+        assert!(refuse(&g).contains("unknown rules"));
+
+        let mut g = acceptable();
+        g.rules_hash = "other".into();
+        assert!(refuse(&g).contains("rules_hash"));
+
+        let mut g = acceptable();
+        g.max_body_bytes = 0;
+        assert!(refuse(&g).contains("max_body_bytes"));
+
+        let mut g = acceptable();
+        g.max_body_bytes = DEFAULT_MAX_BODY_BYTES + 1;
+        assert!(refuse(&g).contains("max_body_bytes"));
+
+        let mut g = acceptable();
+        g.recovery_delay_ms = MIN_RECOVERY_DELAY_MS - 1;
+        assert!(refuse(&g).contains("recovery_delay_ms"));
+    }
+}

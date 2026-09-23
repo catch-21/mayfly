@@ -205,3 +205,175 @@ impl Rules for List {
         serde_json::to_vec(state).expect("state serialises")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pubky_mayfly::hash::ChainId;
+    use pubky_mayfly::record::{CloseBody, CloseReason, Link};
+    use pubky_mayfly::PROTOCOL_VERSION;
+
+    fn fresh() -> State {
+        State {
+            parties: 2,
+            ..State::default()
+        }
+    }
+
+    /// The same split `ChainClient::propose_body` does: `kind` leaves the body and becomes
+    /// the link kind.
+    fn step(state: &State, body: Body) -> Result<State, RulesError> {
+        let mut value = serde_json::to_value(&body).unwrap();
+        let kind = value
+            .as_object_mut()
+            .unwrap()
+            .remove("kind")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        List.apply(state, &link(&kind, value))
+    }
+
+    fn link(kind: &str, body: serde_json::Value) -> Link {
+        Link {
+            v: PROTOCOL_VERSION,
+            chain: ChainId::none(),
+            seq: 1,
+            round: 0,
+            prev: String::new(),
+            confirms: Vec::new(),
+            receipts: Vec::new(),
+            author: String::new(),
+            kid: String::new(),
+            ts: 0,
+            kind: kind.into(),
+            body,
+            state: String::new(),
+            grant: None,
+        }
+    }
+
+    fn close(reason: CloseReason) -> CloseBody {
+        CloseBody {
+            reason,
+            subject: Vec::new(),
+            pending: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_edit_keeps_id_place_and_tick() {
+        let state = fresh();
+        let state = step(
+            &state,
+            Body::Add {
+                id: "milk".into(),
+                text: "Milk".into(),
+                qty: Some(2),
+            },
+        )
+        .unwrap();
+        let state = step(
+            &state,
+            Body::Add {
+                id: "eggs".into(),
+                text: "Milk".into(),
+                qty: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(state.items.len(), 2, "the same text may appear twice");
+        let state = step(&state, Body::Tick { id: "milk".into() }).unwrap();
+        let state = step(
+            &state,
+            Body::Edit {
+                id: "milk".into(),
+                text: Some("Oat milk".into()),
+                qty: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(state.items[0].id, "milk");
+        assert_eq!(state.items[0].text, "Oat milk");
+        assert_eq!(state.items[0].qty, Some(2), "omitting qty leaves it");
+        assert!(state.items[0].ticked);
+        assert_eq!(state.items[1].id, "eggs");
+        assert_eq!(state.items[1].text, "Milk");
+        let state = step(
+            &state,
+            Body::Edit {
+                id: "milk".into(),
+                text: None,
+                qty: Some(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(state.items[0].text, "Oat milk");
+        assert_eq!(state.items[0].qty, Some(1));
+        assert!(state.items[0].ticked);
+        assert!(step(
+            &state,
+            Body::Add {
+                id: "milk".into(),
+                text: "again".into(),
+                qty: None,
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate item"));
+        assert!(step(&state, Body::Tick { id: "nope".into() })
+            .unwrap_err()
+            .to_string()
+            .contains("no item"));
+        let state = step(&state, Body::Untick { id: "milk".into() }).unwrap();
+        assert!(!state.items[0].ticked);
+        let state = step(&state, Body::Remove { id: "eggs".into() }).unwrap();
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.items[0].id, "milk");
+        assert!(!List.may_append(&state, 2, "add"));
+    }
+
+    #[test]
+    fn archive_ends_the_list_and_gates_a_finished_close() {
+        let state = fresh();
+        let state = step(
+            &state,
+            Body::Add {
+                id: "milk".into(),
+                text: "Milk".into(),
+                qty: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(List.status(&state), Status::Ongoing));
+        assert!(List.close(&state, &close(CloseReason::Agreed)).is_ok());
+        assert!(List.close(&state, &close(CloseReason::Abandoned)).is_ok());
+        assert!(List
+            .close(&state, &close(CloseReason::Finished))
+            .unwrap_err()
+            .to_string()
+            .contains("not archived"));
+        let state = step(&state, Body::Archive {}).unwrap();
+        assert!(state.archived);
+        assert!(matches!(List.status(&state), Status::Finished(_)));
+        assert!(!List.may_append(&state, 0, "add"));
+        assert!(step(
+            &state,
+            Body::Add {
+                id: "bread".into(),
+                text: "Bread".into(),
+                qty: None,
+            },
+        )
+        .is_err());
+        assert_eq!(
+            List.close(&state, &close(CloseReason::Finished))
+                .unwrap()
+                .summary,
+            "archived"
+        );
+        assert_eq!(state.items[0].text, "Milk");
+    }
+}
