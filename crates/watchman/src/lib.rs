@@ -1,6 +1,6 @@
-//! Mayfly watchdog (§11): impartial time and non-rewriting, as a process.
+//! Mayfly watchman (§11): impartial time and non-rewriting, as a process.
 //!
-//! A [`Watchdog`] runs over the client crate's [`Store`] and [`Signer`]. It publishes an
+//! A [`Watchman`] runs over the client crate's [`Store`] and [`Signer`]. It publishes an
 //! engagement (§11.2), then polls every party's folders and writes **one signed receipt per
 //! record** it observes (§11.3) — link, confirmation, reject, or `keys/` revocation — in causal
 //! order, with a `consistent` flag; at the `mirror` tier it also keeps byte-for-byte copies
@@ -11,7 +11,7 @@
 //! What it checks before receipting is only what it needs to describe a record honestly: that
 //! the bytes decode as a Mayfly record of the type its folder claims, and that the signature
 //! verifies under the `kid` the record names, so that `by` in a receipt is never a claim the
-//! watchdog cannot stand behind. It does not verify Grants, seats or validity — a receipt says
+//! watchman cannot stand behind. It does not verify Grants, seats or validity — a receipt says
 //! "these bytes existed here by this time", nothing more (§11.4).
 //!
 //! Three rules keep polling order out of the clock (§11.3), and all three are here: a proposal
@@ -45,10 +45,10 @@ use pubky_mayfly_client::layout::{Folder, WitnessFolder};
 use pubky_mayfly_client::signer::sign_record;
 pub use pubky_mayfly_client::{Error, Listed, Signer, Store};
 
-/// What the watchdog agrees to (§11.2): the fields of `engage.jws` that are its own to set.
+/// What the watchman agrees to (§11.2): the fields of `engage.jws` that are its own to set.
 #[derive(Debug, Clone)]
 pub struct Terms {
-    /// End of engagement, Unix seconds. The watchdog stops receipting when it passes.
+    /// End of engagement, Unix seconds. The watchman stops receipting when it passes.
     pub until: u64,
     /// Polling interval in milliseconds; also the clock tolerance other verifiers allow it.
     pub poll_ms: u64,
@@ -130,7 +130,7 @@ struct Observed {
     mirror_at: Option<(String, String)>,
 }
 
-/// One receipt this watchdog wrote.
+/// One receipt this watchman wrote.
 #[derive(Debug, Clone)]
 pub struct Issued {
     /// The receipt, as written.
@@ -139,8 +139,8 @@ pub struct Issued {
     pub record: Hash,
 }
 
-/// A watchdog for one chain.
-pub struct Watchdog<S: Store, K: Signer> {
+/// A watchman for one chain.
+pub struct Watchman<S: Store, K: Signer> {
     store: S,
     signer: K,
     chain: ChainId,
@@ -171,11 +171,11 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Most files fetched per sweep: a hostile folder cannot make the watchdog read forever.
+/// Most files fetched per sweep: a hostile folder cannot make the watchman read forever.
 const MAX_FILES_PER_SWEEP: usize = 10_000;
 
-impl<S: Store, K: Signer> Watchdog<S, K> {
-    /// A watchdog for `chain`, starting from the folder its genesis was written to (a chain
+impl<S: Store, K: Signer> Watchman<S, K> {
+    /// A watchman for `chain`, starting from the folder its genesis was written to (a chain
     /// URL, §9.1). Nothing is read until [`Self::engage`] or [`Self::poll`].
     pub fn new(store: S, signer: K, chain: ChainId, initiator: FolderRef, terms: Terms) -> Self {
         let mut folders = BTreeSet::new();
@@ -204,7 +204,7 @@ impl<S: Store, K: Signer> Watchdog<S, K> {
         self
     }
 
-    /// Tell the watchdog where else a party writes (an invite, §8.1).
+    /// Tell the watchman where else a party writes (an invite, §8.1).
     pub fn add_folder(&mut self, owner: impl Into<String>, path: impl Into<String>) {
         self.folders.insert((owner.into(), path.into()));
     }
@@ -229,7 +229,7 @@ impl<S: Store, K: Signer> Watchdog<S, K> {
         &self.terms
     }
 
-    /// Whether `until` has passed on this watchdog's clock.
+    /// Whether `until` has passed on this watchman's clock.
     pub fn is_lapsed(&self) -> bool {
         self.lapsed()
     }
@@ -256,7 +256,7 @@ impl<S: Store, K: Signer> Watchdog<S, K> {
         self.receipted.values()
     }
 
-    /// When this watchdog observed `record`, if it has.
+    /// When this watchman observed `record`, if it has.
     pub fn observed_at(&self, record: &Hash) -> Option<u64> {
         self.receipted
             .get(record)
@@ -356,7 +356,7 @@ impl<S: Store, K: Signer> Watchdog<S, K> {
         let mut found = std::mem::take(&mut self.pending);
         found.extend(self.collect().await?);
         // Causal order: by seq, links before votes; revocations (no seq) last; then by hash so
-        // two watchdogs sweeping the same files write in the same order.
+        // two watchmen sweeping the same files write in the same order.
         found.sort_by_key(|o| (o.seq.unwrap_or(u64::MAX), o.kind, o.hash));
         for o in found {
             if self.receipted.contains_key(&o.hash) {

@@ -1,6 +1,6 @@
-//! Phase 5 (§16.2) over the in-memory store: a watchdog engages, receipts a three-party chain
+//! Phase 5 (§16.2) over the in-memory store: a watchman engages, receipts a three-party chain
 //! in causal order, and the parties' folds report every link *witnessed 1/1*, embed its
-//! receipts and mirror them; an abandoned close is merely asserted until the watchdog's
+//! receipts and mirror them; an abandoned close is merely asserted until the watchman's
 //! receipts adjudicate it; a double vote and a misnamed mirror are receipted as inconsistent;
 //! the `mirror` tier keeps byte copies; a lapsed engagement receipts nothing.
 //!
@@ -21,10 +21,10 @@ use pubky_mayfly::{typ, PROTOCOL_VERSION};
 use pubky_mayfly_client::chain::verify_from;
 use pubky_mayfly_client::layout::Folder;
 use pubky_mayfly_client::{ChainClient, GenesisSpec, LocalSigner, MemoryStore, Signer, Store};
-use pubky_mayfly_watchdog::{Credit, Declined, Operator, Terms, Watchdog};
+use pubky_mayfly_watchman::{Credit, Declined, Operator, Terms, Watchman};
 
 type Client = ChainClient<Tally, MemoryStore, LocalSigner>;
-type Dog = Watchdog<MemoryStore, LocalSigner>;
+type Dog = Watchman<MemoryStore, LocalSigner>;
 
 const NOW_S: u64 = 1_757_779_812;
 const NOW_MS: u64 = NOW_S * 1000;
@@ -43,7 +43,7 @@ fn actor(shared: &Arc<Mutex<Storage>>, client_id: &str) -> Actor {
     Actor { signer, store }
 }
 
-/// A shared, settable clock: the parties and the watchdog read the same "now".
+/// A shared, settable clock: the parties and the watchman read the same "now".
 #[derive(Clone)]
 struct Clock(Arc<AtomicU64>);
 
@@ -71,8 +71,8 @@ struct World {
     shared: Arc<Mutex<Storage>>,
 }
 
-/// Alice, Bob and Carol on two apps; one watchdog named at genesis. Genesis is written,
-/// the watchdog engages, the parties join, and everyone syncs and mirrors. Nothing has been
+/// Alice, Bob and Carol on two apps; one watchman named at genesis. Genesis is written,
+/// the watchman engages, the parties join, and everyone syncs and mirrors. Nothing has been
 /// receipted yet.
 async fn world(terms: impl Fn(u64) -> Terms) -> World {
     let shared = MemoryStore::shared();
@@ -82,14 +82,14 @@ async fn world(terms: impl Fn(u64) -> Terms) -> World {
         actor(&shared, "notes.example"),
         actor(&shared, "notes.example"),
     ];
-    let watchdog = actor(&shared, "watchdog.example");
+    let watchman = actor(&shared, "watchman.example");
     let pubkies: Vec<String> = actors.iter().map(|a| a.signer.pubky()).collect();
     let mut spec = GenesisSpec::new(pubkies.clone()).with_apps(&[
         "chess.example",
         "notes.example",
         "notes.example",
     ]);
-    spec.witnesses = vec![watchdog.signer.pubky()];
+    spec.witnesses = vec![watchman.signer.pubky()];
     let alice = ChainClient::create(
         Tally,
         actors[0].store.clone(),
@@ -102,9 +102,9 @@ async fn world(terms: impl Fn(u64) -> Terms) -> World {
     let chain = alice.chain().clone();
     let initiator = (pubkies[0].clone(), actors[0].signer.path());
 
-    let mut dog = Watchdog::new(
-        watchdog.store.clone(),
-        watchdog.signer.clone(),
+    let mut dog = Watchman::new(
+        watchman.store.clone(),
+        watchman.signer.clone(),
         chain.clone(),
         initiator.clone(),
         terms(NOW_S + TWO_YEARS),
@@ -135,7 +135,7 @@ async fn world(terms: impl Fn(u64) -> Terms) -> World {
             1,
             "the witness was found from its /pub/ alone"
         );
-        assert_eq!(v.engaged[0].kid, watchdog.signer.kid());
+        assert_eq!(v.engaged[0].kid, watchman.signer.kid());
         assert_eq!(v.committed[0].witnessed, (0, 1), "nothing receipted yet");
     }
     World {
@@ -181,7 +181,7 @@ async fn append(w: &mut World, by: usize, n: u64) -> Hash {
 }
 
 #[tokio::test]
-async fn a_watchdog_receipts_the_chain_and_every_link_is_witnessed() {
+async fn a_watchman_receipts_the_chain_and_every_link_is_witnessed() {
     let mut w = world(Terms::receipts).await;
     let dog_kid = w.dog.signer().kid();
 
@@ -240,7 +240,7 @@ async fn a_watchdog_receipts_the_chain_and_every_link_is_witnessed() {
     }
 
     // Every party mirrored the engagement and the receipts (§7), so the timeline is readable
-    // from any one party's folder even if the watchdog's storage vanished.
+    // from any one party's folder even if the watchman's storage vanished.
     for c in &w.clients {
         let folder = Folder::from_path(&c.signer().path()).chain(c.chain());
         let mirrored = c
@@ -287,11 +287,11 @@ async fn a_watchdog_receipts_the_chain_and_every_link_is_witnessed() {
 }
 
 #[tokio::test]
-async fn an_abandoned_close_is_asserted_until_the_watchdog_adjudicates_it() {
+async fn an_abandoned_close_is_asserted_until_the_watchman_adjudicates_it() {
     let mut w = world(Terms::receipts).await;
     w.dog.poll().await.unwrap();
 
-    // Alice proposes; Bob confirms; Carol says nothing. The watchdog sees the proposal now.
+    // Alice proposes; Bob confirms; Carol says nothing. The watchman sees the proposal now.
     let l1 = w.clients[0]
         .propose("add", json!({ "n": 3 }))
         .await
@@ -301,7 +301,7 @@ async fn an_abandoned_close_is_asserted_until_the_watchdog_adjudicates_it() {
     w.dog.poll().await.unwrap();
 
     // A day and an hour later (`respond_ms` defaults to 24 h, §11.3) Alice closes on Carol
-    // and Bob agrees. Before the watchdog has receipted the close, nobody can say how long
+    // and Bob agrees. Before the watchman has receipted the close, nobody can say how long
     // Carol was silent: the close is asserted, the chain paused, nothing final.
     w.clock.advance(25 * HOUR_MS);
     let close = w.clients[0].propose_abandoned(&[2]).await.unwrap();
@@ -321,7 +321,7 @@ async fn an_abandoned_close_is_asserted_until_the_watchdog_adjudicates_it() {
         assert!(!v.is_final());
     }
 
-    // The watchdog's receipts of the close and of Bob's agreement complete the quorum's view
+    // The watchman's receipts of the close and of Bob's agreement complete the quorum's view
     // (k = 1, so one witness is the quorum): Carol was silent 25 h > 24 h. Final.
     let report = w.dog.poll().await.unwrap();
     assert_eq!(report.receipts, 2, "the close and Bob's confirmation");
@@ -357,7 +357,7 @@ async fn a_double_vote_and_a_misnamed_mirror_are_receipted_as_inconsistent() {
     let bob = &w.actors[1];
     let bob_folder = Folder::from_path(&bob.signer.path()).chain(&chain);
 
-    // Bob confirms Carol's proposal at seq 2 and the watchdog sees it; then Bob also
+    // Bob confirms Carol's proposal at seq 2 and the watchman sees it; then Bob also
     // "confirms" a link that does not exist, in the same round: a second vote by one key in
     // one round (§6.4).
     let l2 = w.clients[2]
@@ -576,7 +576,7 @@ async fn an_operator_engages_from_markers_and_renews_while_credit_lasts() {
         actor(&shared, "notes.example"),
     ];
     let (alice, bob, carol, dave) = (0, 1, 2, 3);
-    let op_actor = actor(&shared, "watchdog.example");
+    let op_actor = actor(&shared, "watchman.example");
     let op_pubky = op_actor.signer.pubky();
     let mut op = Operator::new(
         op_actor.store.clone(),
@@ -723,7 +723,7 @@ async fn a_finished_marker_lets_the_engagement_lapse() {
         actor(&shared, "chess.example"),
         actor(&shared, "notes.example"),
     ];
-    let op_actor = actor(&shared, "watchdog.example");
+    let op_actor = actor(&shared, "watchman.example");
     let mut op = Operator::new(
         op_actor.store.clone(),
         op_actor.signer.clone(),

@@ -3,7 +3,7 @@
 //! The core crate decides what bytes mean; this crate moves bytes. It owns the storage layout
 //! under `/pub/<client_id>/mayfly/`, the propose / confirm / reject / mirror flows of §8, the
 //! "sync before voting" merge of every reachable source, change watching with a polling
-//! fallback, and — later — watchdog engagement.
+//! fallback, and — later — watchman engagement.
 //!
 //! Everything is written against two small traits so the same flows run over an in-memory
 //! store in tests and over the Pubky SDK in an app:

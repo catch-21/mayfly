@@ -2436,7 +2436,7 @@ dependencies = [
  "pubky-mayfly",
  "pubky-mayfly-client",
  "pubky-mayfly-rules",
- "pubky-mayfly-watchdog",
+ "pubky-mayfly-watchman",
  "pubky-testnet",
  "serde",
  "serde_json",
@@ -3368,7 +3368,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pubky-mayfly-watchdog"
+name = "pubky-mayfly-watchman"
 version = "0.1.0"
 dependencies = [
  "axum",

@@ -1,6 +1,6 @@
 ---
 name: mayfly-app
-description: Build applications and rules on Mayfly, the verifiable hashchain protocol among a small fixed set of parties on Pubky (crates pubky-mayfly, pubky-mayfly-rules, pubky-mayfly-client, pubky-mayfly-watchdog). Use when writing a Mayfly app (shared list, chess, agreed document), implementing a Rules module, driving ChainClient, engaging a watchdog, or testing chains over MemoryStore or a pubky-testnet.
+description: Build applications and rules on Mayfly, the verifiable hashchain protocol among a small fixed set of parties on Pubky (crates pubky-mayfly, pubky-mayfly-rules, pubky-mayfly-client, pubky-mayfly-watchman). Use when writing a Mayfly app (shared list, chess, agreed document), implementing a Rules module, driving ChainClient, engaging a watchman, or testing chains over MemoryStore or a pubky-testnet.
 ---
 
 # Building on Mayfly
@@ -17,8 +17,8 @@ below refer to it. Read the section before touching what it governs.
 | `pubky-mayfly` (`crates/core`) | Records, the fold (`fold::verify`), `Rules` trait, hashes/ids. No I/O. Never write records by hand from an app. |
 | `pubky-mayfly-rules` | Rules modules: `list/1` today. Add new rules here. |
 | `pubky-mayfly-client` | `ChainClient`: the app's whole surface. `Store`/`Signer` traits with `MemoryStore`/`LocalSigner` (tests) and `PubkyStore`/`SessionSigner` (Pubky SDK). |
-| `pubky-mayfly-watchdog` | `Watchdog` (one chain) and `Operator` (many chains, customers, credit). Run it as a service; apps only *name* a watchdog in genesis. |
-| `mayfly-demo` (`crates/demo`) | The worked example: a narrated shopping list on a testnet with a live explorer. Read `src/main.rs` for how an app drives `ChainClient` and a watchdog end to end, and `src/explorer.rs` for how a bystander reads and renders a chain. |
+| `pubky-mayfly-watchman` | `Watchman` (one chain) and `Operator` (many chains, customers, credit). Run it as a service; apps only *name* a watchman in genesis. |
+| `mayfly-demo` (`crates/demo`) | The worked example: a narrated shopping list on a testnet with a live explorer. Read `src/main.rs` for how an app drives `ChainClient` and a watchman end to end, and `src/explorer.rs` for how a bystander reads and renders a chain. |
 
 Full API cheat‑sheet: [reference.md](reference.md).
 
@@ -38,7 +38,7 @@ An app never reasons about rounds, votes or files. It does four things:
 3. **Put decisions to the user.** `Action::Decision` is a `close`, `recover` or `witnesses`
    candidate: render it, then `confirm(hash)` or `reject(hash)` (or `repropose`/`pass` if
    `repropose: true`; `confirm_abandoned` for an abandoned close). `Action::MyTurn { round }`:
-   propose something or `pass()`. `Action::AwaitingWitnesses`: show the watchdog's silence as
+   propose something or `pass()`. `Action::AwaitingWitnesses`: show the watchman's silence as
    the reason (§11.2). `Action::Rejected` means a link in my round was not a valid candidate
    and I refused it with evidence (§8.2 step 4) — show it; it needs no reply.
 4. **Propose.** `client.propose_body(&Body::Add { .. })` for rules content. Protocol actions have
@@ -51,7 +51,7 @@ attributed evidence, never something to hide.
 
 ## Rules that must survive into app code
 
-- **Commitment consults votes only.** A watchdog receipt is never a validity condition. Never
+- **Commitment consults votes only.** A watchman receipt is never a validity condition. Never
   block an append on witnesses except through `Policy::await_witnesses`, which holds *my own*
   vote and is off by default.
 - **Sync before voting.** Every vote follows a fresh fold over every reachable folder; `act`
@@ -60,7 +60,7 @@ attributed evidence, never something to hide.
   paths to decide anything; the fold does it.
 - **Location is authorisation, signatures are proof.** Never trust a record because of whose
   folder it sat in.
-- **Genesis names a witness by pubky only.** The watchdog finds the chain itself from the
+- **Genesis names a witness by pubky only.** The watchman finds the chain itself from the
   party's `index/active/<chain_id>` marker, which the client writes; no request API (§11.2).
 
 ## Writing a rules module
@@ -92,7 +92,7 @@ let shared = MemoryStore::shared();
 let identity = Keypair::random();
 let signer = LocalSigner::mint(&identity, "myapp.example", NOW_S, lifetime_secs);
 let store = MemoryStore::new(identity.public_key().z32(), Arc::clone(&shared));
-// share one Arc<AtomicU64> clock via .with_clock(..) on every client and watchdog
+// share one Arc<AtomicU64> clock via .with_clock(..) on every client and watchman
 ```
 
 Deterministic party choice: `pubky_mayfly::vote::designated(chain, seq, round, n)` says whose
@@ -105,7 +105,7 @@ homeserver and need a Postgres (README has the Docker one‑liner).
 - No JS/WASM bindings yet: the client uses `tokio` time and `Send` futures. A web app needs
   the SDK's `signJws` binding and a WASM‑safe `Store`. Prefer a Rust app first.
 - Rules today: `list/1`. Chess needs `shakmaty` and PGN fixtures (§16.2 phase 4).
-- No L402 or Paykit settlement in the watchdog yet; `Operator::credit`/`free` is the ledger.
+- No L402 or Paykit settlement in the watchman yet; `Operator::credit`/`free` is the ledger.
 
 ## Conventions
 

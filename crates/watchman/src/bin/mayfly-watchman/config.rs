@@ -1,6 +1,6 @@
 //! Configuration (§16.2.1 E): flags, their environment variables, and an optional TOML file.
 //!
-//! Precedence, per setting: the flag or its `MAYFLY_WATCHDOG_*` variable, then the file named
+//! Precedence, per setting: the flag or its `MAYFLY_WATCHMAN_*` variable, then the file named
 //! by `--config`, then the default. Lists (`free`, `credit`) are the union of every source.
 
 use std::collections::BTreeMap;
@@ -12,11 +12,11 @@ use std::str::FromStr;
 use clap::Parser;
 use serde::Deserialize;
 
-/// The `client_id` the watchdog publishes under when none is given: it decides the
+/// The `client_id` the watchman publishes under when none is given: it decides the
 /// `/pub/<client_id>/mayfly/` folder every engagement and receipt is written to.
-pub const DEFAULT_CLIENT_ID: &str = "watchdog.mayfly.example";
+pub const DEFAULT_CLIENT_ID: &str = "watchman.mayfly.example";
 /// Where the identity lives when `--keypair-file` is not given.
-pub const DEFAULT_KEYPAIR_FILE: &str = "/var/lib/mayfly-watchdog/keypair";
+pub const DEFAULT_KEYPAIR_FILE: &str = "/var/lib/mayfly-watchman/keypair";
 /// Engagement length: one day.
 pub const DEFAULT_ENGAGE_SECS: u64 = 86_400;
 /// Renew an engagement within an hour of its `until`.
@@ -26,7 +26,7 @@ pub const DEFAULT_POLL_MS: u64 = 5_000;
 /// Seconds between `Operator::sweep()` calls.
 pub const DEFAULT_SWEEP_SECS: u64 = 15;
 
-/// Which Pubky network the watchdog joins.
+/// Which Pubky network the watchman joins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Network {
     /// The Mainline DHT and the default pkarr relays.
@@ -123,38 +123,38 @@ fn check_pubky(s: &str) -> Result<(), String> {
 /// that fills in whatever the flags and the environment leave unset.
 #[derive(Debug, Default, Parser)]
 #[command(
-    name = "mayfly-watchdog",
+    name = "mayfly-watchman",
     version,
-    about = "A Mayfly watchdog: engages on customers' chains and receipts every record it observes (MAYFLY.md §11)."
+    about = "A Mayfly watchman: engages on customers' chains and receipts every record it observes (MAYFLY.md §11)."
 )]
 pub struct Cli {
     /// A TOML file with the same keys as these flags, in snake case.
-    #[arg(long, env = "MAYFLY_WATCHDOG_CONFIG", value_name = "PATH")]
+    #[arg(long, env = "MAYFLY_WATCHMAN_CONFIG", value_name = "PATH")]
     pub config: Option<PathBuf>,
     /// `mainnet` (default), `testnet` or `testnet:<host>`.
-    #[arg(long, env = "MAYFLY_WATCHDOG_NETWORK", value_name = "NETWORK")]
+    #[arg(long, env = "MAYFLY_WATCHMAN_NETWORK", value_name = "NETWORK")]
     pub network: Option<Network>,
-    /// The homeserver the watchdog signs up on, as a z-base-32 pubky.
-    #[arg(long, env = "MAYFLY_WATCHDOG_HOMESERVER", value_name = "PUBKY")]
+    /// The homeserver the watchman signs up on, as a z-base-32 pubky.
+    #[arg(long, env = "MAYFLY_WATCHMAN_HOMESERVER", value_name = "PUBKY")]
     pub homeserver: Option<String>,
     /// A signup token, if the homeserver requires one. Used on first signup only.
     #[arg(
         long,
-        env = "MAYFLY_WATCHDOG_SIGNUP_TOKEN",
+        env = "MAYFLY_WATCHMAN_SIGNUP_TOKEN",
         value_name = "TOKEN",
         hide_env_values = true
     )]
     pub signup_token: Option<String>,
-    /// The app the watchdog signs in as; decides its `/pub/<client_id>/mayfly/` folder.
-    #[arg(long, env = "MAYFLY_WATCHDOG_CLIENT_ID", value_name = "ID")]
+    /// The app the watchman signs in as; decides its `/pub/<client_id>/mayfly/` folder.
+    #[arg(long, env = "MAYFLY_WATCHMAN_CLIENT_ID", value_name = "ID")]
     pub client_id: Option<String>,
     /// The identity file: 32 secret bytes as hex. Generated on first run if absent.
-    #[arg(long, env = "MAYFLY_WATCHDOG_KEYPAIR_FILE", value_name = "PATH")]
+    #[arg(long, env = "MAYFLY_WATCHMAN_KEYPAIR_FILE", value_name = "PATH")]
     pub keypair_file: Option<PathBuf>,
     /// A customer watched for free. Repeatable; comma-separated in the environment.
     #[arg(
         long,
-        env = "MAYFLY_WATCHDOG_FREE",
+        env = "MAYFLY_WATCHMAN_FREE",
         value_name = "PUBKY",
         value_delimiter = ','
     )]
@@ -162,28 +162,28 @@ pub struct Cli {
     /// A prepaid customer, `<pubky>=<secs>`. Repeatable; comma-separated in the environment.
     #[arg(
         long,
-        env = "MAYFLY_WATCHDOG_CREDIT",
+        env = "MAYFLY_WATCHMAN_CREDIT",
         value_name = "PUBKY=SECS",
         value_delimiter = ','
     )]
     pub credit: Vec<String>,
     /// How long each engagement runs before it is renewed, in seconds.
-    #[arg(long, env = "MAYFLY_WATCHDOG_ENGAGE_SECS", value_name = "SECS")]
+    #[arg(long, env = "MAYFLY_WATCHMAN_ENGAGE_SECS", value_name = "SECS")]
     pub engage_secs: Option<u64>,
     /// How long before `until` an engagement is renewed, in seconds.
-    #[arg(long, env = "MAYFLY_WATCHDOG_RENEW_BEFORE_SECS", value_name = "SECS")]
+    #[arg(long, env = "MAYFLY_WATCHMAN_RENEW_BEFORE_SECS", value_name = "SECS")]
     pub renew_before_secs: Option<u64>,
     /// The `poll_ms` every engagement publishes: the clock tolerance verifiers allow.
-    #[arg(long, env = "MAYFLY_WATCHDOG_POLL_MS", value_name = "MS")]
+    #[arg(long, env = "MAYFLY_WATCHMAN_POLL_MS", value_name = "MS")]
     pub poll_ms: Option<u64>,
     /// Seconds between sweeps of every customer's `/pub/` and every watched chain.
-    #[arg(long, env = "MAYFLY_WATCHDOG_SWEEP_SECS", value_name = "SECS")]
+    #[arg(long, env = "MAYFLY_WATCHMAN_SWEEP_SECS", value_name = "SECS")]
     pub sweep_secs: Option<u64>,
     /// `receipts` (default) or `mirror`.
-    #[arg(long, env = "MAYFLY_WATCHDOG_TIER", value_name = "TIER")]
+    #[arg(long, env = "MAYFLY_WATCHMAN_TIER", value_name = "TIER")]
     pub tier: Option<Tier>,
     /// Serve `GET /healthz` and `GET /status` here, e.g. `127.0.0.1:8790`.
-    #[arg(long, env = "MAYFLY_WATCHDOG_HEALTH_ADDR", value_name = "ADDR")]
+    #[arg(long, env = "MAYFLY_WATCHMAN_HEALTH_ADDR", value_name = "ADDR")]
     pub health_addr: Option<SocketAddr>,
 }
 
@@ -244,7 +244,7 @@ pub struct Config {
     pub homeserver: String,
     /// The signup token, if any.
     pub signup_token: Option<String>,
-    /// The app the watchdog signs in as.
+    /// The app the watchman signs in as.
     pub client_id: String,
     /// The identity file.
     pub keypair_file: PathBuf,
@@ -292,7 +292,7 @@ impl Config {
         };
         let homeserver = given(cli.homeserver)
             .or(given(file.homeserver))
-            .ok_or("--homeserver <pubky> is required (MAYFLY_WATCHDOG_HOMESERVER)")?;
+            .ok_or("--homeserver <pubky> is required (MAYFLY_WATCHMAN_HOMESERVER)")?;
         check_pubky(&homeserver).map_err(|e| format!("homeserver: {e}"))?;
         let client_id = given(cli.client_id)
             .or(given(file.client_id))
@@ -390,7 +390,7 @@ mod tests {
 
     /// Parse a command line with no environment involved.
     fn cli(args: &[&str]) -> Cli {
-        let mut argv = vec!["mayfly-watchdog"];
+        let mut argv = vec!["mayfly-watchman"];
         argv.extend_from_slice(args);
         Cli::try_parse_from(argv).unwrap()
     }

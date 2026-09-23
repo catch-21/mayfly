@@ -1,6 +1,6 @@
 [package]
 name = "pubky-mayfly-client"
-description = "Mayfly client: storage layout, propose/confirm/reject/mirror, SSE sync, watchdog engagement."
+description = "Mayfly client: storage layout, propose/confirm/reject/mirror, SSE sync, watchman engagement."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -10,7 +10,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use pubky_mayfly_client::{Error, Signer, Store};
-use pubky_mayfly_watchdog::{Operator, SweepReport};
+use pubky_mayfly_watchman::{Operator, SweepReport};
 
 use crate::health::Status;
 
@@ -93,7 +93,7 @@ mod tests {
 
     use pubky_mayfly::sim::Tally;
     use pubky_mayfly_client::{ChainClient, GenesisSpec, LocalSigner, MemoryStore, Signer};
-    use pubky_mayfly_watchdog::{Operator, Terms};
+    use pubky_mayfly_watchman::{Operator, Terms};
 
     use super::*;
     use crate::health::Identity;
@@ -122,12 +122,12 @@ mod tests {
         }
     }
 
-    /// The loop body over the in-memory store: a customer's chain naming the watchdog is
+    /// The loop body over the in-memory store: a customer's chain naming the watchman is
     /// engaged on the first sweep, and the status page shows it.
     #[tokio::test]
     async fn run_once_engages_and_reports() {
         let shared = MemoryStore::shared();
-        let (dog_store, dog_signer) = actor(&shared, "watchdog.example");
+        let (dog_store, dog_signer) = actor(&shared, "watchman.example");
         let (alice_store, alice_signer) = actor(&shared, "chess.example");
         let (bob_store, bob_signer) = actor(&shared, "notes.example");
 
@@ -153,7 +153,7 @@ mod tests {
             }]
         );
 
-        // Alice starts a chain with Bob naming the watchdog; her client writes the marker.
+        // Alice starts a chain with Bob naming the watchman; her client writes the marker.
         let mut spec = GenesisSpec::new(vec![alice_signer.pubky(), bob_signer.pubky()])
             .with_apps(&["chess.example", "notes.example"]);
         spec.witnesses = vec![dog_signer.pubky()];
@@ -190,7 +190,7 @@ mod tests {
     #[tokio::test]
     async fn run_stops_on_signal() {
         let shared = MemoryStore::shared();
-        let (dog_store, dog_signer) = actor(&shared, "watchdog.example");
+        let (dog_store, dog_signer) = actor(&shared, "watchman.example");
         let op = Operator::new(dog_store, dog_signer.clone(), Terms::receipts(0));
         let status = Status::new(identity(&dog_signer), 15);
         let service = Service::new(op, Vec::new(), status.clone(), 3600);

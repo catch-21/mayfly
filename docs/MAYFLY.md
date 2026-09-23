@@ -10,7 +10,7 @@
 > of v0.6 showed that every remaining witness finding, across three rounds, descended from one
 > rule — a *required* witness whose receipt gated commitment — so v0.7 removes it: witnessing is
 > a per-link, provable status (`m/k`) and a policy each party applies to its own vote, never a
-> validity condition (§11.2), and a watchdog's failures are made provable rather than impossible
+> validity condition (§11.2), and a watchman's failures are made provable rather than impossible
 > (§11.6). Two principles now carry the design: *commitment consults votes only*, and *nothing
 > waits for a third party*. §12 records every residual, including two kept by decision.
 > The name is **Mayfly** (§17).
@@ -31,7 +31,7 @@ access to any party's `/pub/` storage can replay and check:
 3. nothing was inserted, removed, reordered or altered afterwards, and
 4. the current state follows deterministically from the chain.
 
-An optional impartial **watchdog** (witness) adds what the parties cannot give each other: proof
+An optional impartial **watchman** (witness) adds what the parties cannot give each other: proof
 of *when* things happened, and proof that the parties did not later agree to rewrite history.
 
 The first applications are a shared list, chess, and an agreed document with amendments. The
@@ -83,7 +83,7 @@ Two consequences shape everything else:
   a session Alice authorised, but a verifier never relies on that: homeservers can be compromised
   and files are mutable. Every link and confirmation is self-certifying (signed).
 - **Storage is mutable and deletable.** History integrity comes from the hash chain, from every
-  other party holding (and mirroring) each link, and from watchdog receipts — not from the
+  other party holding (and mirroring) each link, and from watchman receipts — not from the
   homeserver refusing edits.
 
 ---
@@ -99,7 +99,7 @@ Two consequences shape everything else:
   proves every link but the head was committed.
 - **Sigsum / C2SP tlog-witness.** Witnesses cosign a log's head after checking only that it is
   append-only and consistent with what they saw before; m-of-n witnesses defeat split views. Our
-  watchdog is exactly this posture: semantics-free, timestamped, cheap.
+  watchman is exactly this posture: semantics-free, timestamped, cheap.
 - **Triple-entry accounting (Grigg).** "The receipt is the transaction": once every party holds
   the same signed record, bookkeeping reduces to presence or absence. Our confirmations are the
   receipts.
@@ -135,10 +135,10 @@ flowchart LR
     B_app -. SSE .-> C_hs
     C_app -. SSE .-> A_hs
     C_app -. SSE .-> B_hs
-    W[Watchdog<br/>impartial time] -. SSE .-> A_hs
+    W[Watchman<br/>impartial time] -. SSE .-> A_hs
     W -. SSE .-> B_hs
     W -. SSE .-> C_hs
-    W -- receipts --> W_hs[(Watchdog's homeserver)]
+    W -- receipts --> W_hs[(Watchman's homeserver)]
     V[Anyone: explorer / verifier] -- GET, list --> A_hs
     V --> B_hs
     V --> W_hs
@@ -167,12 +167,12 @@ the rules turn that into an outcome (a loss by default, a list archived).
 
 Who may propose *rules* content is a rules question (chess: only the player to move; a shopping
 list: any member). Protocol kinds — `reveal`, `rekey`, `recover`, `close`, and `witnesses`
-(which replaces a watchdog that has gone dark, §11.2) — have their own eligibility (§6.4) and
+(which replaces a watchman that has gone dark, §11.2) — have their own eligibility (§6.4) and
 are never gated by the rules. The commitment rule is the same for every rules type.
 
 Components: **rules engine** (pure, deterministic, versioned), **chain** (links plus
 confirmations; verification is a fold), **transport** (Pubky storage and SSE), **key binding via Grant**
-(§5), **watchdog** (§11), **explorer** (§14).
+(§5), **watchman** (§11), **explorer** (§14).
 
 ---
 
@@ -210,7 +210,7 @@ enforced by clocks the signer does not control:
 - **Counterparties' clocks, at confirmation time.** A client never confirms a record whose
   signing Grant has expired or been revoked by its own clock. Under unanimity a backdated record
   therefore needs every honest counterparty to be fooled, and they are not consulting `ts`.
-- **Watchdog receipts, at verification time.** Where receipts exist, a record `observed_at`
+- **Watchman receipts, at verification time.** Where receipts exist, a record `observed_at`
   after its Grant's `exp` (or after a revocation was observed) is invalid, and a Grant used
   within its window is proven so.
 - **The homeserver, at write time**, refuses sessions on expired Grants, which is why honest
@@ -293,7 +293,7 @@ A verifier must never depend on a file the party can delete. So:
   app and the compromised key cannot be trusted to disown itself. It is a **`keys/` file, not a
   chain link**: it has no `seq`, is not a candidate in any round (§6.4), and never enters the
   fold as a vote. Its two effects are: a client that sees it stops confirming records by that
-  `kid` (the co-signers' clocks, §5.2), and a watchdog — which watches `keys/` as well as the
+  `kid` (the co-signers' clocks, §5.2), and a watchman — which watches `keys/` as well as the
   chain folders — receipts it, after which any record by that `kid` observed later is invalid
   (§9.2 step 4). Revoking in Ring remains the authoritative act; this record is how the chain's
   counterparties learn of it.
@@ -380,11 +380,11 @@ before parsing.
 - `receipts` embeds, for each engaged witness whose receipt the author **holds**, its receipt
   for the **QC-completing confirmation**: the member of `confirms` with the greatest
   `observed_at` in that witness's receipts, ties broken by lower `kid`. That is the moment
-  `prev` committed as the watchdog saw it — not the last array element, which the sort makes the
+  `prev` committed as the watchman saw it — not the last array element, which the sort makes the
   highest `kid`. The array is sorted by witness `kid`, may be empty, and is never required to
   be complete (§11.2): the verifier validates each receipt present, under the engagement key it
   names, and never asks whether one is missing. Embedding is for durability — it puts the
-  watchdog's timestamp inside the chain, where every party mirrors it (§11.4).
+  watchman's timestamp inside the chain, where every party mirrors it (§11.4).
 - `state` is **mandatory**: `BLAKE3(rules.canonical_state(apply(state, link)))`. It pinpoints
   the exact link where two rules implementations diverge. It is mandatory rather than
   recommended because it is inside the signed bytes: if it were optional, two correct clients —
@@ -617,7 +617,7 @@ never be replayed across chains.
                { "pubky": "<bob>",   "role": "black" } ],
   "nonce": "<16 random bytes b64url>",
   "confirm_quorum": 2,
-  "witnesses": [ { "pubky": "<watchdog>" } ],
+  "witnesses": [ { "pubky": "<watchman>" } ],
   "recovery_delay_ms": 172800000,
   "options": { "time_control": { "think_ms": 259200000, "respond_ms": 86400000 } }
 }
@@ -715,7 +715,7 @@ write capability. Mirrors of earlier records stay where they were; the verifier 
 history from every folder they have declared, in order.
 
 `note` is optional and **public forever**: it is plaintext in a JWS under `/pub/`, mirrored by
-every party and any watchdog. A client labels the field as such before the user types into it,
+every party and any watchman. A client labels the field as such before the user types into it,
 and a user who merely needs a seat change should leave it empty rather than record a permanent
 admission of key compromise. The out-of-band check the counterparties perform (below) does not
 depend on it.
@@ -745,7 +745,7 @@ supply:
   anomalies against the confirmers — careless or colluding counterparties cannot hand a seat
   over early. One witness alone decides nothing; a split quorum leaves the recover standing,
   labelled. The verdict is provisional while the recover is the head and settled once a
-  successor embeds its QC, like every other time question. Without a watchdog no one can prove
+  successor embeds its QC, like every other time question. Without a watchman no one can prove
   elapsed time; clients honour the delay on their own clocks and the verifier reports the
   confirmers' claimed `ts` gap as an unproven assertion. This is the same posture as the
   abandoned close: the protocol's time-dependent controls are real controls only with a
@@ -799,7 +799,7 @@ every rule below exists to keep the accusation checkable:
   is *asserted*, `|subject| ≤ max(1, N − 2)`: for `N ≥ 3` at least two present parties must
   agree, so no one party can name everyone else and end a chain alone; for `N = 2` the bound is
   `1`, because a two-party chain without a working clock is inherently one party's word, and
-  the alternative — a chain that can never end when the opponent walks away and the watchdog is
+  the alternative — a chain that can never end when the opponent walks away and the watchman is
   dark — is worse. The verifier labels every asserted close as such.
 - **Presence defeats it.** A subject who has **any** valid record at this `seq` — a proposal, a
   confirmation, a reject (including a pass or a skip, §6.3), a `recover` for their seat, or a
@@ -807,10 +807,10 @@ every rule below exists to keep the accusation checkable:
   **void** (an anomaly against its author). A skip is a record by the skipper, not by the
   party skipped: the skipper cannot be named; the silent designated proposer still can. Not merely "a link has a QC": a proposer whose valid link the accuser simply never
   confirmed is present. A subject who has been slow can therefore always reinstate the chain by
-  acting — until a watchdog says they were too late (below).
+  acting — until a watchman says they were too late (below).
 - It commits with confirmations from every non-subject party. With two parties that is the
   author alone: a unilateral record that "Bob stopped responding at seq 12".
-- **Time is the watchdog's** (§11.3), and **only an adjudicated close is final.** An abandoned
+- **Time is the watchman's** (§11.3), and **only an adjudicated close is final.** An abandoned
   close that has gathered its non-subjects' confirmations is in one of these states, and the
   verifier names which:
 
@@ -882,16 +882,16 @@ Per party, under their app folder:
     confirms/00000007-<h16>-<kid>.jws         mirrored confirmation of link 7 by <kid> (QCs, late genesis confirmations)
     rejects/00000007-r1.jws                   my reject or pass in round 1 of seq 7 (rare)
     receipts/<witness kid>/engage.jws         mirrored engagement, so a receipts listing is self-describing
-    receipts/<witness kid>/00000007-<h16>.jws mirrored watchdog receipts, one folder per engagement key (§11.4)
+    receipts/<witness kid>/00000007-<h16>.jws mirrored watchman receipts, one folder per engagement key (§11.4)
     receipts/<witness kid>/revoked-<kid>-<h16>.jws  mirrored receipt of a keys/ revocation (no seq, §11.3)
-  witness/<chain_id>/                         only on a watchdog's storage, under its own app folder (§11)
+  witness/<chain_id>/                         only on a watchman's storage, under its own app folder (§11)
     engage.jws                                current engagement
-    engage/<kid>.jws                          every engagement this watchdog has held for the chain, kept forever
+    engage/<kid>.jws                          every engagement this watchman has held for the chain, kept forever
     00000007-<h16>.jws                        receipt
     revoked-<kid>-<h16>.jws                   receipt of a party's keys/<kid>.revoked.jws (no seq, §11.3)
     mirror/{links,confirms,rejects}/...       `mirror` tier only: byte-for-byte copies (§11.2, §11.5)
   index/active/<chain_id>                     marker: body is the chain URL I joined through; UI listing,
-  index/finished/<chain_id>                   and the request a credited watchdog acts on (§11.2)
+  index/finished/<chain_id>                   and the request a credited watchman acts on (§11.2)
 ```
 
 `<h16>` is the first sixteen Crockford Base32 characters (80 bits) of the file's own hash for
@@ -907,9 +907,9 @@ Rules:
 
 - A party writes their own links, confirmations and rejects to their own storage. After a
   link commits, every party **mirrors** it — the link file unchanged, the confirmations that
-  form its QC, and every watchdog receipt for it — so the full chain *and its timeline* are
+  form its QC, and every watchman receipt for it — so the full chain *and its timeline* are
   readable from any one party's homeserver and each party holds evidence against later edits by
-  the other parties or by the watchdog. Mirroring the QC matters most at the head, which has no
+  the other parties or by the watchman. Mirroring the QC matters most at the head, which has no
   successor to embed it yet. Under `q < N` a genesis confirmation that arrives after genesis
   committed is mirrored the same way: it is the only evidence of that party's seat (§6.6).
   A mirrored confirmation is written under its own name suffixed with the confirmer's `kid`
@@ -925,7 +925,7 @@ Rules:
   that long should be archived and continued in a new one referencing the old head.
 
 Capability required by the app session: none beyond the app's own `/pub/<client_id>/:rw`. A
-watchdog's `witness/` folder likewise lives under the watchdog app's own `client_id`; its
+watchman's `witness/` folder likewise lives under the watchman app's own `client_id`; its
 `engage.jws` declares that `path`.
 
 ---
@@ -969,12 +969,12 @@ the invite link's reply channel), and from then on she uses the `path` it declar
    in this round, they `PUT` a confirmation with the same `round`.
 3. When a party sees the QC complete — the author's proposal plus confirmations from every other
    party in that round — link `n` is committed for them: they mirror it, stop voting at `n`, and
-   the next append may begin on top of it. As watchdog receipts for `n` and its QC arrive, every
+   the next append may begin on top of it. As watchman receipts for `n` and its QC arrive, every
    party mirrors those too, and the proposer of `n+1` embeds whichever receipts of `n`'s
    completing confirmation it holds (§6.1). No link waits for a receipt (§11.2). A party whose
    policy is to proceed only from a witnessed head applies it to its **own** vote — it does not
    confirm `n+1` until `n` shows *witnessed m/k* to its satisfaction — and its client shows the
-   watchdog's silence as the reason. If the watchdog stays dark, the same client offers
+   watchman's silence as the reason. If the watchman stays dark, the same client offers
    `witnesses {remove, add}` to replace it, which is an ordinary append (§11.2).
 4. If a party receives an *invalid* link, it `PUT`s a reject naming it, keeps the bytes as
    evidence, and the UI says so. The reject kills the round (§6.4) and the next round's
@@ -992,7 +992,7 @@ Clients without SSE poll `list(chains/<id>/links/)`, `list(chains/<id>/confirms/
 
 **Sync before voting.** A client that has been offline, or is starting fresh, first establishes
 the committed head, the current round at the next `seq`, and the votes cast in it by reading
-from **every** reachable source — the parties' storage and any watchdog mirror (§11.5) — and
+from **every** reachable source — the parties' storage and any watchman mirror (§11.5) — and
 merging, verifying everything regardless of source. Freshness matters as much as validity: a
 proposal that is valid but sits in a dead round must not be confirmed. Only then does the client
 vote on what is pending and propose its own queued intents.
@@ -1033,12 +1033,12 @@ state. Three endings:
   mate. The remaining parties append `close {reason: "abandoned", subject: [...]}`, listing the
   unconfirmed proposal in `pending`. It commits with the non-subjects' confirmations alone. The
   rules turn it into an outcome (chess: the subject loses by default). If the subject reappears
-  and confirms the pending link before a watchdog deems them late, the close is void and the
+  and confirms the pending link before a watchman deems them late, the close is void and the
   chain continues; otherwise it stands.
 
 Clients move the marker from `index/active/` to `index/finished/` when a `close` commits. A
 client that finds the chain stalled offers "close as abandoned" once the rules' allowance has
-passed on its local clock — and, where a watchdog is engaged, only once the receipts agree, so
+passed on its local clock — and, where a watchman is engaged, only once the receipts agree, so
 that the close it writes will be adjudicated valid rather than merely asserted.
 
 ---
@@ -1097,7 +1097,7 @@ reject a committed prefix.
    REVOCATIONS, as discovery only: list each party's keys/*.revoked.jws, at most one file per
    kid the fold has established for that party (anything beyond that is HOSTILE, as above),
    verify each under the embedded Grant of the same pubky (§5.3). A revocation is never a vote
-   and never a candidate; it feeds step 4 only, and only through a watchdog receipt of it.
+   and never a candidate; it feeds step 4 only, and only through a watchman receipt of it.
    WITNESSES, before the fold: for each GENESIS witness pubky, fetch every engagement it has
    held for this chain — its current witness/<chain_id>/engage.jws, its history under
    witness/<chain_id>/engage/<kid>.jws, and every receipts/<kid>/engage.jws mirrored by a party
@@ -1244,7 +1244,7 @@ reject a committed prefix.
    seq", per-link witness times, every recover and veto with its delay verdict, and every
    anomaly attributed to a key (equivocation, tampered mirror, unconfirmed proposal, unjustified
    round, premature skip, void or invalid close, late subject record, hostile source, and each
-   §11.6 watchdog row).
+   §11.6 watchman row).
 ```
 
 ### 9.3 Single-link check (used online before confirming)
@@ -1324,7 +1324,7 @@ insufficient material; compiles to WASM). Options: `initial_fen`, fixed roles, `
 Export to PGN for NIP-64 interoperability. A confirmation of a move means "this move happened",
 not that the opponent likes it; the mate-delivering move is countersigned like any other, and
 an opponent who will not countersign it, or who lets their clock run out, is the subject of an
-`abandoned` close (§6.8) and loses by default — adjudicated by the watchdog stopwatch under
+`abandoned` close (§6.8) and loses by default — adjudicated by the watchman stopwatch under
 `time_control`, asserted otherwise. There is no `claim_timeout` link: a timeout *is* an
 abandoned close.
 
@@ -1342,7 +1342,7 @@ redline of agreed versus proposed text.
 
 ---
 
-## 11. Watchdogs: impartial time and non-rewriting
+## 11. Watchmen: impartial time and non-rewriting
 
 ### 11.1 What the parties cannot prove to each other
 
@@ -1352,15 +1352,15 @@ are closed by an impartial third party who observes and timestamps, but never si
 
 ### 11.2 Roles and engagement
 
-Genesis names witnesses by pubky. A watchdog agrees to watch by publishing an engagement at
+Genesis names witnesses by pubky. A watchman agrees to watch by publishing an engagement at
 `<path>/witness/<chain_id>/engage.jws` under its own app folder (`typ: "mayfly-witness"`;
 every `witness/…` path in this section is relative to the `path` the engagement declares):
 
 ```json
 {
   "v": 1, "kind": "engage", "chain": "<chain_id>",
-  "kid": "<watchdog's signing key>", "grant": "<Grant JWS under the watchdog pubky, cnf == kid>",
-  "path": "/pub/<watchdog client_id>/mayfly/",
+  "kid": "<watchman's signing key>", "grant": "<Grant JWS under the watchman pubky, cnf == kid>",
+  "path": "/pub/<watchman client_id>/mayfly/",
   "parties": ["<alice>", "<bob>"],
   "until": 1760371200,
   "policy": { "poll_ms": 5000, "clock": "ntp" },
@@ -1372,11 +1372,11 @@ every `witness/…` path in this section is relative to the `path` the engagemen
 **The witness key is established exactly as a party's is.** Genesis names a pubky; the
 engagement embeds a Grant under that pubky whose `cnf` is the `kid` that signs the engagement and
 every receipt, with the same checks as §5.2. Without this a receipt is a signature by *some* key
-that claims to be the watchdog, and a party could mint receipts under a key of their choosing.
+that claims to be the watchman, and a party could mint receipts under a key of their choosing.
 Parties mirror `engage.jws` alongside the receipts (`receipts/<kid>/engage.jws`, §7), which is
-the durable copy; and the watchdog itself keeps every engagement it has ever held for the chain
+the durable copy; and the watchman itself keeps every engagement it has ever held for the chain
 under `witness/<chain_id>/engage/<kid>.jws`, not only the current one, so that a `receipts`-tier
-watchdog that has rotated its key still lets a verifier establish the old one from its own
+watchman that has rotated its key still lets a verifier establish the old one from its own
 storage.
 
 **Engagement lifetime.** Receipts observed after `until` are still valid receipts (they are
@@ -1386,17 +1386,17 @@ count toward the witness quorum below, and a chain that still wants it re-engage
 Two engagements by the same witness pubky for the same chain are read as: the one with the
 **later `until` governs going forward**. Renewal therefore never needs the parties to do
 anything, and the verifier attaches no anomaly to it: from files alone nobody can tell which of
-two engagements was published first. A watchdog that *replaces* its current `engage.jws` with
+two engagements was published first. A watchman that *replaces* its current `engage.jws` with
 an earlier `until` is caught the way a deleted receipt is (§11.6): every party mirrors the
 engagement it saw (`receipts/<kid>/engage.jws`, §7), so the longer window survives on their
-storage, signed by the watchdog, and it cannot un-engage receipts already issued or shrink the
+storage, signed by the watchman, and it cannot un-engage receipts already issued or shrink the
 window in which they counted. A witness withdraws honestly by letting `until` pass, not by
 rewriting it.
 
 **Witnessing never gates the chain.** Earlier drafts let genesis mark a witness *required*, so
 that no link could be proposed until that witness had receipted the previous one. Three
 successive reviews found that every hole in the witness design descended from that one rule —
-a dark watchdog froze the chain, every exit needed the missing receipt, activation raced the
+a dark watchman froze the chain, every exit needed the missing receipt, activation raced the
 first successor, replacements dropped the clock — and each patch bred the next. The rule is
 gone. **A witness receipt is never a validity condition for any link.** What replaces it:
 
@@ -1409,16 +1409,16 @@ gone. **A witness receipt is never a validity condition for any link.** What rep
   vote (`await_witnesses: m` in the app, **default `0`**), not a rule the protocol enforces on
   everyone. Be clear about what it is: under unanimity a withheld vote *is* the chain, so this
   policy holds everyone — and the stopwatch charges the wait to the party holding, as `respond`
-  or `silence` (§11.3). Waiting for a dark watchdog is therefore the offence the abandoned close
+  or `silence` (§11.3). Waiting for a dark watchman is therefore the offence the abandoned close
   punishes, and a client that turns `await_witnesses` on should say so to its user and turn it
-  off when the watchdog is provably dark (§11.6). Under `q < N` the same policy holds nothing:
+  off when the watchman is provably dark (§11.6). Under `q < N` the same policy holds nothing:
   the others commit past the waiting party, and — because a `witnesses` link needs every party —
-  the chain cannot change its watchdog until the absent votes return (§12).
+  the chain cannot change its watchman until the absent votes return (§12).
 - **Receipts are embedded when they exist.** Link `n+1` embeds every receipt of `n`'s
   QC-completing confirmation that its author holds (§6.1), for durability. The verifier
   validates the receipts that are present and never asks whether any are missing.
 - **Adjudication reads the fold.** Time questions (§6.8, §6.7, §6.4) are decided over every
-  receipt the verifier can find — embedded, mirrored, or on the watchdog — so omitting a receipt
+  receipt the verifier can find — embedded, mirrored, or on the watchman — so omitting a receipt
   from a link buys nothing.
 
 **Changing the engaged set.** `witnesses` is a protocol-level link kind:
@@ -1433,14 +1433,14 @@ It is proposable by any party (§6.4); a link whose `add` and `remove` are both 
 candidate. Each added witness's `engage.jws` is embedded and verified in the fold (§9.2 step
 3f), so the new key is established in the same link that seats it. The change takes effect from
 the next `seq`. Because witnessing gates nothing, a `witnesses` link can always be proposed —
-there is no receipt it could be waiting for — so replacing a dark watchdog is an ordinary
+there is no receipt it could be waiting for — so replacing a dark watchman is an ordinary
 append.
 
 A `witnesses` change is a **fault-model change** — it decides who clocks you — and is treated
 like genesis (§6.6): clients never auto-confirm it, they show add/remove to the user, and it
 commits only with confirmations of *that link* from **every** party. Under the default
 unanimity that is simply the ordinary QC; the rule exists for `q < N`, where it stops a subset
-seating a colluding watchdog or removing an honest one before a contested close, and the
+seating a colluding watchman or removing an honest one before a contested close, and the
 verifier applies it when *forming* the QC (§9.2 step 3b: `q` is `N` for this kind), never as
 an afterthought once a smaller QC has committed.
 
@@ -1451,15 +1451,15 @@ on its own receipts at that `seq`. The denominator is the engaged set, not whoev
 published. With `k` engaged, a question is *adjudicated* only when at least `⌈(k+1)/2⌉` of
 them have receipts covering it **and agree**; if fewer have receipts, or those that have
 disagree by more than a polling interval, the question is *asserted* — never *invalid* — and
-the verifier says so, naming the silent or disagreeing witnesses (§11.6). Two honest watchdogs
+the verifier says so, naming the silent or disagreeing witnesses (§11.6). Two honest watchmen
 with drifting clocks therefore degrade a close to assertion; they cannot hang it. No single
 receipt ever decides anything: a recover is not invalidated, nor a record put outside its Grant
 window, by one fast or one malicious witness.
 
 The arithmetic has one consequence worth stating for the default deployment. With `k = 2` —
-one watchdog nominated by each party — the quorum is `2`, so **a single outage degrades every
+one watchman nominated by each party — the quorum is `2`, so **a single outage degrades every
 time question to assertion** for as long as it lasts; at `N = 2` that means either party can
-assert-close the other while one watchdog is down. Chains that care about that use `k = 3`
+assert-close the other while one watchman is down. Chains that care about that use `k = 3`
 (one nominated by each party and one agreed), which adjudicates through any single outage.
 
 Two words, kept apart: a link is **final** when a successor has embedded its QC (§6.4); it is
@@ -1467,7 +1467,7 @@ Two words, kept apart: a link is **final** when a successor has embedded its QC 
 about the parties' votes, the second about time, and neither ever waits for the other in the
 protocol — only in a party's own policy.
 
-`service` declares what the watchdog has agreed to store and is priced accordingly:
+`service` declares what the watchman has agreed to store and is priced accordingly:
 
 | `service` | Stores | Proves | Suits |
 | --- | --- | --- | --- |
@@ -1480,79 +1480,79 @@ few hundred bytes whether the link is a chess move or a 60 KB contract redline a
 `O(bytes)` and may carry a retention term (`until`) priced separately. Rules may set a
 `min_witness_service` (e.g. `document/1` defaults to `mirror`; `chess/1` to `receipts`), and the
 client warns before confirming a genesis whose witnesses offer less than that. A
-`mirror` watchdog that drops a record it agreed to keep is caught the same way as one that
+`mirror` watchman that drops a record it agreed to keep is caught the same way as one that
 withholds a receipt: the parties hold the bytes and the engagement is public.
 
-Payment is out of band and optional. The natural fit is L402: the watchdog answers a request to
+Payment is out of band and optional. The natural fit is L402: the watchman answers a request to
 watch with `402 Payment Required` and a Lightning invoice; the payer settles and presents the
-preimage; the watchdog publishes `engage.jws` carrying the **invoice and the preimage**. A bare
+preimage; the watchman publishes `engage.jws` carrying the **invoice and the preimage**. A bare
 `payment_hash` would prove nothing — anyone can write a hash into a signed record. The pair
 proves more: the BOLT11 invoice is signed by a node key and names the amount and payment hash;
-the preimage proves that hash was settled; and the watchdog's signature over both, together with
-the node key it publishes on its profile, ties the settled invoice to the watchdog. One more
-binding is needed, or the watchdog could reuse any invoice it was ever paid: the invoice's
+the preimage proves that hash was settled; and the watchman's signature over both, together with
+the node key it publishes on its profile, ties the settled invoice to the watchman. One more
+binding is needed, or the watchman could reuse any invoice it was ever paid: the invoice's
 description (or `description_hash` preimage) **must contain the `chain_id`**, and a verifier
 rejects an `engage.jws` whose invoice does not name the chain it is engaging. What the record
-still does not prove is *who* paid, which is fine — the point is that the watchdog was paid to
+still does not prove is *who* paid, which is fine — the point is that the watchman was paid to
 watch *this* chain, so that its incentive to be honest (a public key with a public track record,
 and future business) is legible.
 
-**Credit, and how a watchdog learns of a chain.** Paying per chain puts a payment step in the
+**Credit, and how a watchman learns of a chain.** Paying per chain puts a payment step in the
 middle of "start a game" and leaves the counterparty confirming a genesis whose witness has not
-yet appeared. The recommended deployment settles once, in advance, and lets the watchdog find
+yet appeared. The recommended deployment settles once, in advance, and lets the watchman find
 its own work:
 
-- A customer buys **watch-time** from a watchdog — so many chain-days, at a tier — by any means
-  (L402 is the natural one), and their app remembers the watchdog's pubky. Time is the unit
+- A customer buys **watch-time** from a watchman — so many chain-days, at a tier — by any means
+  (L402 is the natural one), and their app remembers the watchman's pubky. Time is the unit
   because it is the one the protocol already has (`until`) and the one nobody else can spend:
   records and bytes are partly under the opponent's control, and a griefer who could burn a
   party's witness by burning rounds would do so precisely before a contested close. The
   `mirror` tier adds a byte budget, already bounded by `max_body_bytes × records`.
-- Nobody asks the watchdog to watch. A party's client writes `index/active/<chain_id>` under
+- Nobody asks the watchman to watch. A party's client writes `index/active/<chain_id>` under
   its own protocol folder as a matter of course (§7), with the chain URL as its body. The
-  watchdog treats each customer's `/pub/` as its work queue — SSE on `…/mayfly/index/`, or a
+  watchman treats each customer's `/pub/` as its work queue — SSE on `…/mayfly/index/`, or a
   listing — reads genesis at the URL, and if genesis names it and the customer's credit covers
   it, publishes `engage.jws` with `until` a fixed engagement length ahead. Typically this
   lands before the invite has gone out, so the counterparty reviews a genesis whose witness is
   already engaged. A party who joins writes their own marker, so a party's own nominated
-  watchdog engages the same way — the §11.4 default of one witness per party, for free.
-- Several parties to one chain may be customers of the same watchdog. It engages once and
+  watchman engages the same way — the §11.4 default of one witness per party, for free.
+- Several parties to one chain may be customers of the same watchman. It engages once and
   charges one of them: a customer it watches for free if there is one, else the chain's
   initiator, else the first by pubky, falling through to the next if the first has no credit.
-- While credit remains, the watchdog re-engages with a later `until` before the current one
+- While credit remains, the watchman re-engages with a later `until` before the current one
   lapses; nobody has to remember to renew. When the marker moves to `index/finished/` (§8.4),
   or the credit is spent, it stops renewing and the engagement lapses honestly. The fold
   reports the gap; a top-up does not revive a lapsed engagement — a new one is a new
   `engage.jws`.
-- A watchdog may watch some pubkies **for free**: its operator's own, a demonstration, a test
+- A watchman may watch some pubkies **for free**: its operator's own, a demonstration, a test
   suite. Nothing in the record distinguishes a free engagement; `payment` is simply absent.
 
 What this gives up is the per-chain legibility of "paid to watch *this* chain" in the record;
 what remains provable is what mattered — the engagement and every receipt under it — and a
-watchdog's reputation was always going to rest on receipts delivered, not on invoices.
+watchman's reputation was always going to rest on receipts delivered, not on invoices.
 `payment` stays optional; a credit-backed engagement omits it or carries whatever voucher the
-watchdog chooses to sign.
+watchman chooses to sign.
 
 **Paykit, for later.** [Paykit](https://github.com/pubky/paykit-rs) (pre-production at the time
 of writing; Payment Requests at v0.2 draft) is the natural way to settle credit, alongside or
-instead of L402, because it removes the one server L402 assumes. A watchdog publishes its
+instead of L402, because it removes the one server L402 assumes. A watchman publishes its
 Payment Endpoints under its own pubky, so a customer's app discovers how to pay it by reading a
 homeserver, as it discovers everything else here. Payment Requests are payee-initiated over a
-`pubky-noise` Encrypted Link — watchdog as payee, customer as payer — and a *recurring* request
+`pubky-noise` Encrypted Link — watchman as payee, customer as payer — and a *recurring* request
 with a `billing_period` is precisely a watch-time subscription. The payer's
 `paykit.payment_proof` carries the rail proof (a BOLT11 preimage, or another rail's) and must
-copy the payee's `payment_reference` unchanged, which is where the watchdog names the credit
+copy the payee's `payment_reference` unchanged, which is where the watchman names the credit
 account or, for a per-chain purchase, the `chain_id` — the same binding the L402 invoice
-description carries. The watchdog's Encrypted Receipt gives the customer the evidence for "I
+description carries. The watchman's Encrypted Receipt gives the customer the evidence for "I
 paid for thirty days and you lapsed", which L402 alone does not. What Paykit does not give is
-public legibility: the exchange is private, so a watchdog that wants "paid to watch this chain"
+public legibility: the exchange is private, so a watchman that wants "paid to watch this chain"
 in the record puts the rail proof and `payment_reference` into `payment` itself. Paykit executes
-no payments and detects no settlement; a wallet or processor adapter sits behind the watchdog
+no payments and detects no settlement; a wallet or processor adapter sits behind the watchman
 either way.
 
 ### 11.3 Receipts and the stopwatch
 
-For **every record** it observes — link, confirmation or reject, from any party — the watchdog
+For **every record** it observes — link, confirmation or reject, from any party — the watchman
 writes one receipt at `witness/<chain_id>/<seq>-<h16>.jws` (`<h16>` of the observed record):
 
 ```json
@@ -1560,7 +1560,7 @@ writes one receipt at `witness/<chain_id>/<seq>-<h16>.jws` (`<h16>` of the obser
   "v": 1, "kind": "observed", "chain": "<chain_id>",
   "record": "<hash of the observed record>", "typ": "mayfly-confirm",
   "seq": 7, "round": 0, "by": "<kid of the record's signer>",
-  "kid": "<watchdog's signing key, as established in engage.jws>",
+  "kid": "<watchman's signing key, as established in engage.jws>",
   "observed_at": 1757779812999,
   "source": { "pubky": "<bob>", "cursor": 2210 },
   "consistent": true
@@ -1569,7 +1569,7 @@ writes one receipt at `witness/<chain_id>/<seq>-<h16>.jws` (`<h16>` of the obser
 
 Receipts are per record, not per `seq`, because the stopwatch has to know *who* did *what* and
 *when*: a receipt for "seq 7 committed" would blur the mover's think time with the confirmer's
-delay. The watchdog also watches each party's `keys/` folder and receipts every
+delay. The watchman also watches each party's `keys/` folder and receipts every
 `<kid>.revoked.jws` it finds, with `typ: "mayfly-revoke"`, `by` the revoked `kid`, and no
 `seq` or `round`, at `witness/<chain_id>/revoked-<kid>-<h16>.jws` (`<h16>` of the revocation
 file); that receipt is what makes a revocation count against later records (§9.2 step 4). `source` is the homeserver and event cursor the record was seen at; `consistent` becomes
@@ -1603,8 +1603,8 @@ who sits on an offer is spending `think`, and an offerer who goes silent after o
 spending `respond` on the mover's eventual reply, not the mover's `think`. Rules that want a
 pending offer to pause the mover's clock say so in `obliged`.
 
-The formula is only as good as the observations, and a watchdog polls several homeservers in
-some order. Three rules keep polling order out of the clock: a watchdog **does not receipt a
+The formula is only as good as the observations, and a watchman polls several homeservers in
+some order. Three rules keep polling order out of the clock: a watchman **does not receipt a
 proposal until it has receipted the QC of its `prev`** (it holds the proposal and issues both
 receipts in causal order), so `think` cannot see a move before the moment it became legal;
 `ready(n)` is the **latest** QC confirmation observed, not the first, so a straggling
@@ -1636,93 +1636,93 @@ receipt for it is missing, the witness **cannot judge** and counts as silent, ne
 see it". This is what makes the quorum's verdicts monotone in the receipts a verifier holds:
 one with fewer receipts lands on *asserted*, never on the opposite final (§6.8, §11.2).
 
-### 11.4 What a watchdog proves — and does not
+### 11.4 What a watchman proves — and does not
 
-| Watchdog proves | Because |
+| Watchman proves | Because |
 | --- | --- |
 | Record `R` existed by time `T` (and so link `n` was committed by the time of its last confirmation) | Signed receipt with `observed_at` |
-| The parties did **not later collude to rewrite history** | Any replacement history lacks receipts, or conflicts with them — and the receipts are not only on the watchdog's storage: every party mirrors them (§7), the next link embeds those its author holds (§6.1), and the `mirror` tier keeps the records. A rewrite therefore needs every party *and* every watchdog *and* no bystander with a copy |
+| The parties did **not later collude to rewrite history** | Any replacement history lacks receipts, or conflicts with them — and the receipts are not only on the watchman's storage: every party mirrors them (§7), the next link embeds those its author holds (§6.1), and the `mirror` tier keeps the records. A rewrite therefore needs every party *and* every watchman *and* no bystander with a copy |
 | Who took how long, and who is silent | Per-record receipts give `think`, `respond` and `silence` per party (§11.3) |
-| No split view | The watchdog fetched from every party's homeserver and recorded consistency |
+| No split view | The watchman fetched from every party's homeserver and recorded consistency |
 | **Not:** that the content is true or fair | Two parties who agree to record a lie will have it confirmed and receipted; only stakes or interested third parties address content honesty |
 
-A watchdog can only lie about time, withhold receipts, or delete them later. Withholding and
-deletion are defeated by the parties mirroring receipts as they arrive: a receipt the watchdog
-issued and then removed is still on every party's storage, signed by the watchdog. Lying about
-time is caught only by comparison — independent watchdogs disagreeing by more than a polling
+A watchman can only lie about time, withhold receipts, or delete them later. Withholding and
+deletion are defeated by the parties mirroring receipts as they arrive: a receipt the watchman
+issued and then removed is still on every party's storage, signed by the watchman. Lying about
+time is caught only by comparison — independent watchmen disagreeing by more than a polling
 interval. Note what is *not* evidence: a homeserver's `Last-Modified` header or event cursor is
 set by the operator of that homeserver, who is one of the parties' agents, and proves nothing to
-anyone else. Use m-of-n watchdogs when it matters; the default should be **one nominated by each
+anyone else. Use m-of-n watchmen when it matters; the default should be **one nominated by each
 party**, never one run by a party's own homeserver operator — an operator who already timestamps
 one side's writes is not impartial about that side's clock, however honest. A homeserver operator
-can still sell watchdog service to chains whose parties are all hosted elsewhere, as a sidecar
+can still sell watchman service to chains whose parties are all hosted elsewhere, as a sidecar
 with no homeserver code changes.
 
 Why the receipts matter more than the receipt-mirroring costs: a receipt is a few hundred bytes,
 and a chain's whole receipt history is smaller than one of its links with a body. There is no
 storage argument for leaving the timeline in one place.
 
-### 11.5 The watchdog as always-on chain history
+### 11.5 The watchman as always-on chain history
 
-Receipts carry hashes. A watchdog engaged at the `mirror` tier (§11.2) also **stores the records
+Receipts carry hashes. A watchman engaged at the `mirror` tier (§11.2) also **stores the records
 themselves** under `witness/<chain_id>/mirror/{links,confirms,rejects}/...`, byte for byte,
 so that it holds the complete chain as well as the timeline. It is then the one participant that
 is always online, never a party to the outcome, and paid to keep the copy. That gives an app a
 **sync source** that does not depend on any party or any party's homeserver being reachable:
 
 - **A party comes back online.** Before voting, a client must know the committed head and the
-  current round and votes at the next `seq`. It merges every reachable source — the watchdog is
+  current round and votes at the next `seq`. It merges every reachable source — the watchman is
   usually the fastest and most complete — and verifies everything exactly as it would from a
   party's storage (signatures and hashes, never trust in the source; see "Sync before voting",
   §8.2). Under the default unanimity rule nothing has *committed*
   while the party was away, so what it catches up on is the pending proposal awaiting its
   confirmation, the confirmations already given, and any history it lost locally. With a
-  `confirm_quorum` below `N` (larger groups), the chain has genuinely advanced and the watchdog is
+  `confirm_quorum` below `N` (larger groups), the chain has genuinely advanced and the watchman is
   the catch-up source in the full sense.
 - **A party's homeserver is unreachable** (down, migrated, or the party deleted files). The
-  other parties and any bystander keep working from the watchdog's mirror; the explorer marks the
+  other parties and any bystander keep working from the watchman's mirror; the explorer marks the
   missing source as a gap, not an error.
 - **The whole chain outlives the parties.** A finished game or an executed document remains
-  verifiable from the watchdog alone for as long as the engagement runs, which is a service a
-  watchdog can price separately ("keep this for ten years").
+  verifiable from the watchman alone for as long as the engagement runs, which is a service a
+  watchman can price separately ("keep this for ten years").
 
 How this plays out per application:
 
-| Application | Offline party | What the watchdog provides |
+| Application | Offline party | What the watchman provides |
 | --- | --- | --- |
-| Shared list / agreed document (any member may append) | Others see a stalled proposal (unanimity) or continue (quorum). Returning member syncs the head and pending proposals from the watchdog, confirms, then proposes its queued intents one at a time. | Head, open proposals, missing history; proof of how long the member was away |
+| Shared list / agreed document (any member may append) | Others see a stalled proposal (unanimity) or continue (quorum). Returning member syncs the head and pending proposals from the watchman, confirms, then proposes its queued intents one at a time. | Head, open proposals, missing history; proof of how long the member was away |
 | Chess and other turn-taking rules | Nothing to sync but the opponent's latest move, which the rules already force the player to wait for. | Chiefly the stopwatch; `receipts` is normally enough, since both players hold the full game. `mirror` only if a durable third copy is wanted |
 
-The mirror is verified like everything else, so a watchdog cannot use it to inject or alter
+The mirror is verified like everything else, so a watchman cannot use it to inject or alter
 anything — only to serve what the parties signed, and to be the copy that is still there when
 theirs are not.
 
-### 11.6 Incentives, and what a misbehaving watchdog can be shown to have done
+### 11.6 Incentives, and what a misbehaving watchman can be shown to have done
 
-Chains are short-lived; watchdogs are not. A watchdog is paid per engagement, is identified by
+Chains are short-lived; watchmen are not. A watchman is paid per engagement, is identified by
 a pubky with a public history of engagements, and is chosen by the next chain's parties on the
 strength of that history. Its incentive is to give the best service to every chain, because
 a single provable failure is visible to every future customer. The parties, for their part, have
 a mutual interest in the chain being valid and useful: that is why they started it. The
-protocol therefore does not try to make misbehaviour *impossible* for a watchdog — that road
+protocol therefore does not try to make misbehaviour *impossible* for a watchman — that road
 led to `required`, and to three reviews' worth of freezes — but to make every misbehaviour
 **detectable, attributable, and provable from files**, so that reputation can do its work.
 
-| Watchdog misbehaviour | How it is detected | What the proof consists of |
+| Watchman misbehaviour | How it is detected | What the proof consists of |
 | --- | --- | --- |
 | Never receipts (dark) | Every link shows *witnessed 0/k* for that witness while other witnesses, or the parties' own records, show the chain moving | The public `engage.jws` (it agreed to watch, and was paid) beside the records it never receipted; other witnesses' receipts of the same records |
 | Receipts selectively (skips one party's records) | Per-record receipts have gaps that correlate with a signer | The signer's records exist on their homeserver, mirrored by the counterparties, with no receipt; other witnesses receipted them |
-| Issues a receipt, then deletes it | The receipt is on every party's `receipts/<kid>/` mirror and is missing from `witness/` | The mirrored receipt, signed by the watchdog's own key |
-| Shrinks its engagement (replaces `engage.jws` with an earlier `until`) | The party's `receipts/<kid>/engage.jws` mirror carries a later `until` than the watchdog's current `witness/<chain_id>/engage.jws` | Both engagements, signed by the watchdog's own key |
+| Issues a receipt, then deletes it | The receipt is on every party's `receipts/<kid>/` mirror and is missing from `witness/` | The mirrored receipt, signed by the watchman's own key |
+| Shrinks its engagement (replaces `engage.jws` with an earlier `until`) | The party's `receipts/<kid>/engage.jws` mirror carries a later `until` than the watchman's current `witness/<chain_id>/engage.jws` | Both engagements, signed by the watchman's own key |
 | Lies about time | Its `observed_at` differs from other witnesses' by more than a polling interval, or places a record before its `prev` QC | Two signed receipts for the same record that disagree; a receipt whose time contradicts causal order |
-| Adjudicates falsely (signs receipts that make a present party look silent) | The subject's own records, receipted by other witnesses or mirrored by the parties, fall inside the "silent" window | The subject's signed records beside the watchdog's receipts |
+| Adjudicates falsely (signs receipts that make a present party look silent) | The subject's own records, receipted by other witnesses or mirrored by the parties, fall inside the "silent" window | The subject's signed records beside the watchman's receipts |
 | `mirror` tier drops or alters a record | The mirror's bytes differ from the parties' copies, or are absent | The parties' copies, with the link hash pinned in the successor's `prev` |
 | Reuses an engagement or invoice | `engage.jws` lacks the `chain_id` in its invoice, or is signed under a lapsed Grant | The engagement itself |
 
 Every row is decidable by a bystander with read access and no trust in anyone. The verifier
-emits each as an anomaly attributed to the watchdog's pubky, and the explorer shows it on the
-watchdog's public record. None of them can stall the chain, because none of them is a validity
-condition; the worst a watchdog can do to a chain is leave it *unwitnessed*, which the parties
+emits each as an anomaly attributed to the watchman's pubky, and the explorer shows it on the
+watchman's public record. None of them can stall the chain, because none of them is a validity
+condition; the worst a watchman can do to a chain is leave it *unwitnessed*, which the parties
 see at once and answer by engaging another.
 
 The same posture applies to parties. A party cannot be prevented from stalling, obstructing,
@@ -1739,34 +1739,34 @@ argument.
 | --- | --- | --- |
 | Forge a link or confirmation for another party | Everything signed by the party's Grant `cnf` key; the Grant (identity-signed) is embedded in the chain | Compromised client key or Grant (revoke in Ring, `rekey`; §6.7) |
 | Take a party's seat with another Grant for the same pubky (phished sign-in, unrelated app, stolen authenticator) | `rekey` needs the old key's signature and the seat's `client_id`; `recover` is vetoable by the old key, never auto-confirmed, delayed, and must carry write capability on the chain folder | A thief who holds the old key *is* the party until the user revokes in Ring; a `recover` confirmed by careless counterparties after the delay, with no veto, succeeds — by design, since that is also what genuine recovery looks like |
-| Sign with a lapsed or revoked Grant by backdating `ts` | `ts` is not a control (§5.2); counterparties refuse expired Grants by their own clocks at confirmation time; receipts invalidate records observed after `exp` or revocation | A chain with no watchdog and every counterparty colluding — which is every threat's residual |
+| Sign with a lapsed or revoked Grant by backdating `ts` | `ts` is not a control (§5.2); counterparties refuse expired Grants by their own clocks at confirmation time; receipts invalidate records observed after `exp` or revocation | A chain with no watchman and every counterparty colluding — which is every threat's residual |
 | Freeze the chain with a far-future `ts` | `ts` is outside consensus; ordering is `seq`/`prev` only | None |
 | Party deletes their published key material | Verification never reads `keys/`; every Grant is inside the committed chain and mirrored by all | None once genesis has committed |
 | Chain record replayed as a homeserver PoP (or vice versa) | Distinct JWS `typ` values; homeserver requires PoP claim shape | None |
-| Reorder, drop or insert links | `seq`, `prev`, `chain` signed in every link; embedded `confirms` prove commitment | None for links with a committed successor. The head's commitment rests on QC files that can be deleted from confirmers' storage — hence every party mirrors the head's QC (§7) and, with a watchdog, its receipts |
+| Reorder, drop or insert links | `seq`, `prev`, `chain` signed in every link; embedded `confirms` prove commitment | None for links with a committed successor. The head's commitment rests on QC files that can be deleted from confirmers' storage — hence every party mirrors the head's QC (§7) and, with a watchman, its receipts |
 | Two committed links at one `seq` (fork) | One final vote per party per round; a QC needs `q > N/2`; across rounds the successor's embedded QC decides (§6.4) | Within a round requires `2q − N` parties to double-vote (everyone, under unanimity) — provable, attributable |
 | Honest parties strand each other at a `seq` (competing proposals, spent votes) | Votes are never taken back; a round dies by evidence and the next has one designated proposer; honest parties converge within two rounds | None |
 | Party un-commits a link by publishing or revealing a vote late | Equivocation counts, so a second vote cannot dissolve a QC; a withheld vote can move only the **provisional head**, once, and never a link with a committed successor | Apps must treat the head as provisional (§6.4 rule 4) |
-| Alter a past link | Every party mirrors committed links; watchdog receipts pin hashes and times | Needs all parties and all watchdogs to collude *and* nobody else to have a copy |
-| Parties collude later to rewrite history | Watchdog receipts, mirrored by every party and embedded in the next link (§11.4) | Chains without a watchdog rely on any bystander's copy |
-| Watchdog withholds or later deletes receipts | Parties mirror receipts as they arrive; embedded receipts travel with the chain | A receipt never issued cannot be mirrored — use m-of-n witnesses |
-| Party walks away, or refuses to confirm an outcome they dislike (mate, timeout, a document they regret) | `abandoned` close (§6.8) commits without the subject; the rules record the default outcome; a watchdog adjudicates the elapsed time | Without a watchdog the close is an assertion the subject can void by reappearing; with two parties it is unilateral |
-| Stalling short of abandonment (slow-walking every confirmation) | Watchdog receipts make it attributable; the rules' allowance bounds it | Liveness within the allowance always requires the counterparties |
-| Griefing open-authorship chains with competing or junk proposals, or rejecting every valid one | Rounds ≥ 1 have a single rotating proposer; rejecting a valid link is obstruction, judged like silence (§11.3) | Each `seq` may cost a round or two; a griefer without a watchdog can only be closed out by assertion |
+| Alter a past link | Every party mirrors committed links; watchman receipts pin hashes and times | Needs all parties and all watchmen to collude *and* nobody else to have a copy |
+| Parties collude later to rewrite history | Watchman receipts, mirrored by every party and embedded in the next link (§11.4) | Chains without a watchman rely on any bystander's copy |
+| Watchman withholds or later deletes receipts | Parties mirror receipts as they arrive; embedded receipts travel with the chain | A receipt never issued cannot be mirrored — use m-of-n witnesses |
+| Party walks away, or refuses to confirm an outcome they dislike (mate, timeout, a document they regret) | `abandoned` close (§6.8) commits without the subject; the rules record the default outcome; a watchman adjudicates the elapsed time | Without a watchman the close is an assertion the subject can void by reappearing; with two parties it is unilateral |
+| Stalling short of abandonment (slow-walking every confirmation) | Watchman receipts make it attributable; the rules' allowance bounds it | Liveness within the allowance always requires the counterparties |
+| Griefing open-authorship chains with competing or junk proposals, or rejecting every valid one | Rounds ≥ 1 have a single rotating proposer; rejecting a valid link is obstruction, judged like silence (§11.3) | Each `seq` may cost a round or two; a griefer without a watchman can only be closed out by assertion |
 | Initiator sets a quorum that lets a subset commit without the rest | Genesis confirmation is consent: clients refuse and verifiers invalidate `q ≤ N/2` (§6.6) | `q < N` is crash-tolerance only (§6.4) |
 | Last confirmer grinds the seat lottery | Commit-reveal: `commit` in genesis confirmations, `reveal` links afterwards (§6.6) | A party who will not reveal is closed out as abandoned |
 | Homeserver forges a key binding | Impossible: the binding is a Grant signed by the identity key, which the homeserver never holds | None |
-| Homeserver deletes or edits files | Duplicated on every party's homeserver plus watchdog receipts | All homeservers colluding can hide, not fake |
+| Homeserver deletes or edits files | Duplicated on every party's homeserver plus watchman receipts | All homeservers colluding can hide, not fake |
 | Rules disagreement | `rules_hash` pins the reference module; mandatory `state` hash per link pinpoints divergence and names the deviating side | Verifier must run the reference module or a conformant implementation |
 | Two honest verifiers read different values from the same bytes | Parsing rules (§6): no duplicate keys, integers within 2^53, no normalisation, unknown fields rejected | None if implemented; a conformance suite is part of the core crate |
 | Cross-app or cross-chain replay | `typ` values, `client_id` in the Grant, `chain` in every record | None |
 | Spam or oversize records in a chain folder | Only the owner can write there; `max_body_bytes` enforced on bytes received; a folder holding more than 3 records **by its owner's own key** per (`seq`, round) is hostile and read no further — mirrored records count against their signer, so a mirrored QC is normal (§9.2) | Owner spamming their own folder costs the owner an anomaly, and the verifier a bounded number of fetches per round; rounds are bounded only by the griefer's willingness to sign obstruction evidence |
-| Forged watchdog receipts | Witness key established by an embedded Grant in `engage.jws`, mirrored by parties (§11.2) | A witness with no verifiable engagement is ignored |
-| Watchdog reuses an old invoice as "payment for this chain" | Invoice description must name the `chain_id` (§11.2) | Who paid is not proven, by design |
-| Watchdog goes dark, or never watches | Witnessing gates nothing: no link waits for a receipt, so a dark watchdog can only leave links *unwitnessed*, which every party sees at once; `witnesses` replaces it as an ordinary append (§11.2); its failure is provable from its public engagement beside the records it did not receipt (§11.6) | Time questions on those links are asserted, not adjudicated, until a quorum is watching; with `k = 2` any single outage does this (§11.2). A party whose `await_witnesses` policy holds its vote is stalling, and is charged as such (§11.3); under `q < N` it cannot hold at all, and the watchdog cannot be replaced until the absent votes return |
-| Parties swap in a colluding watchdog, pack the adjudication majority, or switch the clock off before a contested close | `witnesses` is a fault-model change: never auto-confirmed, shown like genesis, and its QC is formed with quorum `N` whatever genesis `q` is (§9.2 step 3b); the adjudication denominator is the engaged set, so a first-to-publish watchdog is never a majority alone (§11.2) | Under unanimity this is all-party consent, the same residual as rewriting history; the rule bites only at `q < N` |
+| Forged watchman receipts | Witness key established by an embedded Grant in `engage.jws`, mirrored by parties (§11.2) | A witness with no verifiable engagement is ignored |
+| Watchman reuses an old invoice as "payment for this chain" | Invoice description must name the `chain_id` (§11.2) | Who paid is not proven, by design |
+| Watchman goes dark, or never watches | Witnessing gates nothing: no link waits for a receipt, so a dark watchman can only leave links *unwitnessed*, which every party sees at once; `witnesses` replaces it as an ordinary append (§11.2); its failure is provable from its public engagement beside the records it did not receipt (§11.6) | Time questions on those links are asserted, not adjudicated, until a quorum is watching; with `k = 2` any single outage does this (§11.2). A party whose `await_witnesses` policy holds its vote is stalling, and is charged as such (§11.3); under `q < N` it cannot hold at all, and the watchman cannot be replaced until the absent votes return |
+| Parties swap in a colluding watchman, pack the adjudication majority, or switch the clock off before a contested close | `witnesses` is a fault-model change: never auto-confirmed, shown like genesis, and its QC is formed with quorum `N` whatever genesis `q` is (§9.2 step 3b); the adjudication denominator is the engaged set, so a first-to-publish watchman is never a majority alone (§11.2) | Under unanimity this is all-party consent, the same residual as rewriting history; the rule bites only at `q < N` |
 | Omitting a witness receipt to dodge its judgement | Adjudication reads every receipt in the fold, embedded or not; embedding is durability, never the evidence set (§11.2) | None |
-| Watchdog lies, receipts selectively, deletes receipts, or adjudicates falsely | Every case is detectable and provable from files and attributed to the watchdog's pubky (§11.6 table); none can stall the chain | Reputation, not the protocol, is what the proof acts on — by design (§11.6) |
+| Watchman lies, receipts selectively, deletes receipts, or adjudicates falsely | Every case is detectable and provable from files and attributed to the watchman's pubky (§11.6 table); none can stall the chain | Reputation, not the protocol, is what the proof acts on — by design (§11.6) |
 | Silent designated proposer stalls a `seq` (skip abuse) | Skips only in round `≥ 1`, one per party per `seq`; a premature skip is an anomaly by receipts, never a validity question, so commitment never depends on receipts; a skip is presence for the skipper; the skipped party's `silence` is per `seq` and is not reset (§6.3, §6.4, §11.3) | A party can spend one skip per `seq`, costing the skipped party at most two rounds, then obstruct in the open, which the files prove |
 | Grinding a filename prefix collision | 80-bit prefixes; filenames are never identity (§7) | None |
 | One party names everyone else as `subject` and closes alone | `\|subject\| ≤ N − 1` when adjudicated, `≤ max(1, N − 2)` when asserted; presence (any record) contests; only an adjudicated close is final, an asserted one pauses the chain (§6.8) | `N = 2` asserted is one party's word with no protocol delay; it settles only by adjudication or the app's own horizon |
@@ -1785,16 +1785,16 @@ argument.
   (§6.8). That is the semantics asked for: nothing is decided behind anyone's back except the
   decision that they left. Apps hide short absences by queueing local intents and proposing them
   as the chain advances. Larger or flakier groups should set a `confirm_quorum`, and rely on the
-  watchdog mirror (§11.5) as the catch-up source for members returning after the chain has
+  watchman mirror (§11.5) as the catch-up source for members returning after the chain has
   moved on.
-- Concluding against a party needs time, and time needs a watchdog. Without one, an `abandoned`
+- Concluding against a party needs time, and time needs a watchman. Without one, an `abandoned`
   close is the remaining parties' word; with two parties, one party's word. Every stake-bearing
   chain should name a witness.
 - The head is provisional. A link is final only when a successor embeds its QC, so a chain's
   last link needs a `close` link to become final, and apps act on final links only. This is one
   confirmation's worth of latency, the same as any chain.
 - Storage is mutable, so evidence relies on mirroring and (for time and non-rewriting) on
-  watchdogs. Records are kilobytes; blobs belong outside the chain, referenced by hash.
+  watchmen. Records are kilobytes; blobs belong outside the chain, referenced by hash.
 - `/pub/` is public, and **private chains are not a v1 feature**. When they are added, the
   shape will be: a random 32-byte chain key generated by the initiator and delivered to each
   party out of band (or sealed to them via their `/priv/` storage), `body` encrypted with
@@ -1814,10 +1814,10 @@ argument.
 ## 14. Chain explorer (visualisation for participants and bystanders)
 
 One reusable, read-only UI component: give it a chain URL and it fetches from every party and
-watchdog, verifies (§9), and renders the **history of messages** — the same component for a chess
+watchman, verifies (§9), and renders the **history of messages** — the same component for a chess
 game, a shopping list or a contract.
 
-- **Timeline.** One row per committed link: `seq`, kind, author, author's `ts`, watchdog
+- **Timeline.** One row per committed link: `seq`, kind, author, author's `ts`, watchman
   `observed_at`, `think` and each party's `respond`, and badges — *signed*, *confirmed by …*
   (per party), *mirrored
   by …*, *witnessed m/n*, *rules-valid*. Missing confirmations, mirrors or receipts are shown as
@@ -1829,7 +1829,7 @@ game, a shopping list or a contract.
 - **Diff.** Between any two points: moves, items added/removed, redline between revisions.
 - **Evidence panel.** For a selected record: raw JWS with decoded header and payload, signature
   check, hash-chain check, every location the file was found (with ETag), the embedded
-  confirmations, watchdog receipts, and any anomaly attributed to a key.
+  confirmations, watchman receipts, and any anomaly attributed to a key.
 - **Export.** A signed bundle (all links, confirmations, rejects, receipts) for offline
   re-verification, plus rules exports (PGN, plain-text list, document with change history).
 
@@ -1843,7 +1843,7 @@ bystanders cannot disagree about validity.
 | Package | Contents |
 | --- | --- |
 | `@mayfly/core` (WASM) | Sign/verify records, chain verification, voting/commitment logic, rules plugins (`list/1`, `chess/1`, `document/1`), receipt verification |
-| `@mayfly/client` | Pubky JS SDK glue: grant sign-in (the grant `cnf` key is the chain key), Grant embedding, storage layout, propose/confirm/reject/mirror with round tracking, SSE watcher with polling fallback, watchdog engagement |
+| `@mayfly/client` | Pubky JS SDK glue: grant sign-in (the grant `cnf` key is the chain key), Grant embedding, storage layout, propose/confirm/reject/mirror with round tracking, SSE watcher with polling fallback, watchman engagement |
 | `@mayfly/explorer` | The explorer component (§14) and rules render plugins |
 
 Apps, in build order:
@@ -1854,11 +1854,11 @@ Apps, in build order:
    or finished, from a link to its genesis or a later proposal. Every link in full, with decoded
    JSON, and verification failures highlighted on the record they belong to (§14).
 3. **Chess** (`chess/1`) — roles, draws, resignation, correspondence time control adjudicated by a
-   watchdog stopwatch, spectator page.
-4. **Agreed document** (`document/1`) — proposals, acceptances, redline, watchdog timestamps.
-5. **Watchdog** — the sidecar service (Rust, runs next to a homeserver or anywhere), an L402
+   watchman stopwatch, spectator page.
+4. **Agreed document** (`document/1`) — proposals, acceptances, redline, watchman timestamps.
+5. **Watchman** — the sidecar service (Rust, runs next to a homeserver or anywhere), an L402
    payment front, and a dashboard: engaged chains, receipts, payments; for participants, a
-   picker to nominate and pay watchdogs.
+   picker to nominate and pay watchmen.
 
 ---
 
@@ -1872,8 +1872,8 @@ mayfly/
                                           Rules trait, receipt verification. WASM-safe.
   rules/         pubky-mayfly-rules    list/1, chess/1 (shakmaty), document/1
   client/        pubky-mayfly-client   storage layout, propose/confirm/reject/mirror, SSE sync,
-                                          rekey, watchdog engagement, verify(url)
-  watchdog/      pubky-mayfly-watchdog witness service + L402
+                                          rekey, watchman engagement, verify(url)
+  watchman/      pubky-mayfly-watchman witness service + L402
   cli/           mayfly-cli            create/join/append/confirm/verify from the terminal
   bindings/js/   @mayfly/*             wasm-bindgen wrappers and the explorer
 ```
@@ -1902,13 +1902,13 @@ Tests use `pubky-testnet::EphemeralTestnet` as the SDK's own tests do.
    converge through a dead round; an offline member stalls and resumes; a `recover` moves a
    party to a third folder and the verifier follows it; a tampered mirror is detected.
 3. **Shared list web app and chain viewer** — WASM bindings, delegated grant sign-in. *Native first:*
-   `mayfly-demo` is a narrated shopping list on a testnet (three grant sessions, a watchdog,
+   `mayfly-demo` is a narrated shopping list on a testnet (three grant sessions, a watchman,
    happy and sad paths) with a live explorer page rendering every homeserver's files and the
    verified chain (§14, demo edition), including a per-record evidence panel. The web app
    proper is planned in §16.2.1.
 4. **Chess rules and app** — `shakmaty`, PGN fixtures, time control.
-5. **Watchdog** — service, receipts, L402, stopwatch adjudication in the verifier; chess timeouts
-   end to end. *Done, less L402 and chess:* `pubky-mayfly-watchdog` engages, receipts every
+5. **Watchman** — service, receipts, L402, stopwatch adjudication in the verifier; chess timeouts
+   end to end. *Done, less L402 and chess:* `pubky-mayfly-watchman` engages, receipts every
    record in causal order with the §11.3 consistency flag, keeps the `mirror` tier, and stops
    at `until`; an abandoned close goes from asserted to adjudicated on its receipts alone, over
    the in-memory store and on a homeserver. Parties find a genesis-named witness from its
@@ -1917,7 +1917,7 @@ Tests use `pubky-testnet::EphemeralTestnet` as the SDK's own tests do.
    parties' `index/active/` markers, renewal while credit lasts, lapse on `index/finished/`.
 6. **Agreed document** — rules and redline explorer plugin.
 
-### 16.2.1 Phase 3 in detail: the shopping list web app, a hosted watchdog
+### 16.2.1 Phase 3 in detail: the shopping list web app, a hosted watchman
 
 Two findings fix the shape: `pubky-mayfly` and `pubky-mayfly-rules` already compile for
 `wasm32-unknown-unknown` unchanged, and the SDK's own JS package (`@synonymdev/pubky`) is a
@@ -1968,7 +1968,7 @@ Phases, with their dependencies:
   with a `/testnet/` flavour, as pubky-explorer does. Next.js static export; Vite is the
   fallback if the wasm loading fights Next. Sign-in by `startGrantAuthFlow` (Pubky Ring QR)
   for real use, local-keypair `signup`/`signin`
-  as a testnet developer shortcut. Screens: create (parties by pubky, quorum, watchdog), share
+  as a testnet developer shortcut. Screens: create (parties by pubky, quorum, watchman), share
   the invite URL, join with the genesis consent screen (never auto-join), the list (add, tick,
   untick, remove, edit), decisions (close, recover, abandoned close), per-item status
   (provisional, final, witnessed *m/k*). Loop: `act()` on event-stream events, on a timer,
@@ -1981,14 +1981,14 @@ Phases, with their dependencies:
   highlighted on the record it belongs to: a bad signature, a hash mismatch, a fold anomaly, a
   rules refusal, a tampered mirror. Rules-agnostic, so a list, a game or a document all appear
   as a chain. Same verifier the parties run (§14), built on C's `verifyFrom`.
-- **E. Watchdog service and Docker.** A `mayfly-watchdog` binary in `crates/watchdog`: config
+- **E. Watchman service and Docker.** A `mayfly-watchman` binary in `crates/watchman`: config
   from env or TOML — network (`mainnet` | `testnet[:host]`), homeserver pubky, optional signup
   token, client id, keypair file (generated on first run), free pubkys, default credit,
   engagement length, renew-before, poll interval; `Operator::sweep()` in a loop; `/healthz`
   and a status JSON. Multi-stage Dockerfile (builder → slim runtime, non-root, keypair volume).
   `docker-compose.yml` for local end to end: Postgres, the `homeserver-testnet` image, the
-  watchdog. Then the same image against a real homeserver with a token.
-- **F. End to end, then this document.** Testnet: two browsers and the Dockerised watchdog on
+  watchman. Then the same image against a real homeserver with a token.
+- **F. End to end, then this document.** Testnet: two browsers and the Dockerised watchman on
   one machine. Mainnet: the company's staging or a personal homeserver, with signup tokens.
   Then §14 and §15 rewritten to the packages that shipped, and a note on what browser SSE and
   relay-only DHT access cost in practice.
@@ -2004,13 +2004,13 @@ feature build for `wasm32-unknown-unknown`, enforced by CI; the SDK fork's JS bi
 `Session`; the plain-data views moved from the demo into `pubky_mayfly_client::view` so the
 demo, the module and the coming viewer render from one implementation; the Node test replays
 the `list.rs` flow — create, join, append, competing proposals through a skip, close,
-bystander verification, a tampered mirror caught — through the module. E done: `mayfly-watchdog` in
-`crates/watchdog` takes its configuration from flags, `MAYFLY_WATCHDOG_*` variables or TOML,
+bystander verification, a tampered mirror caught — through the module. E done: `mayfly-watchman` in
+`crates/watchman` takes its configuration from flags, `MAYFLY_WATCHMAN_*` variables or TOML,
 keeps its identity in a file, signs up or in as the account's state requires, sweeps an
 `Operator` on a timer and serves `/healthz` and `/status`; the multi-stage `Dockerfile` and
-`docker-compose.yml` (Postgres, testnet, watchdog) are in the repository root. One finding for
+`docker-compose.yml` (Postgres, testnet, watchman) are in the repository root. One finding for
 F: the testnet homeserver's record advertises `127.0.0.1` and `localhost`, and the SDK's
-`testnet:<host>` form moves only the relay and bootstrap node, so a containerised watchdog
+`testnet:<host>` form moves only the relay and bootstrap node, so a containerised watchman
 shares the testnet container's network namespace rather than running beside it.
 
 ### 16.3 SDK changes
@@ -2069,7 +2069,7 @@ used here (`pubky-mayfly`, `@mayfly/*`) do not collide.
 1. ~~**Name** (§17).~~ Resolved: **Mayfly**. The protocol sub-folder is
    `/pub/<client_id>/mayfly/` and the `typ` prefix is `mayfly-`. Records live under the
    seat-holding app's own folder, never a shared one (§7).
-2. ~~**Watchdog finality.**~~ Resolved, twice. First as "a `required` witness's receipt is
+2. ~~**Watchman finality.**~~ Resolved, twice. First as "a `required` witness's receipt is
    embedded in the next link"; then, after three reviews traced every witness freeze to the
    word *required*, as: receipts are embedded when held and mirrored by all (§6.1, §7), no link
    ever waits for one, and a party who wants a witnessed head withholds its own vote (§11.2).
@@ -2087,7 +2087,7 @@ used here (`pubky-mayfly`, `@mayfly/*`) do not collide.
    which a Grant is, so such an attestation could be admitted as a second type without changing
    the chain format. This is the upgrade path if Ring is willing; the Grant is the design until
    then.
-6. **Settling watchdog credit with Paykit** (§11.2). Feasible and a better fit than L402 for
+6. **Settling watchman credit with Paykit** (§11.2). Feasible and a better fit than L402 for
    the credit deployment — Pubky-native discovery, recurring Payment Requests as
    subscriptions, Encrypted Receipts for the customer — once Paykit is past pre-production.
    Open: whether the `payment` field grows a variant for the Paykit `payment_reference`, or

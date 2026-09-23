@@ -1,4 +1,4 @@
-//! Watchdog engagement payload (§11.2).
+//! Watchman engagement payload (§11.2).
 
 use serde::{Deserialize, Serialize};
 
@@ -21,9 +21,9 @@ pub struct Engagement {
     pub chain: ChainId,
     /// Engagement signing key (z32).
     pub kid: String,
-    /// Grant JWS under the watchdog pubky with `cnf == kid`.
+    /// Grant JWS under the watchman pubky with `cnf == kid`.
     pub grant: String,
-    /// The watchdog app's folder under which `witness/<chain_id>/...` lives (§7).
+    /// The watchman app's folder under which `witness/<chain_id>/...` lives (§7).
     pub path: String,
     /// The parties it agreed to watch, by pubky.
     pub parties: Vec<String>,

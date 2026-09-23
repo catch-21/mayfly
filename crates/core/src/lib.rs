@@ -1,7 +1,7 @@
 //! Mayfly core.
 //!
 //! Everything here is pure: bytes in, verdicts out. No storage, no network, no clock. The
-//! client crate supplies files and SSE events; the watchdog crate supplies receipts; this crate
+//! client crate supplies files and SSE events; the watchman crate supplies receipts; this crate
 //! decides what they mean.
 //!
 //! Module map, against the specification (`docs/MAYFLY.md`):
@@ -53,9 +53,9 @@ pub mod typ {
     pub const CONFIRM: &str = "mayfly-confirm";
     /// A reject, pass or skip in a round; or an old-key veto of a recover.
     pub const REJECT: &str = "mayfly-reject";
-    /// A watchdog engagement or receipt.
+    /// A watchman engagement or receipt.
     pub const WITNESS: &str = "mayfly-witness";
-    /// A watchdog receipt of a `keys/<kid>.revoked.jws` file.
+    /// A watchman receipt of a `keys/<kid>.revoked.jws` file.
     pub const REVOKE: &str = "mayfly-revoke";
 
     /// Every `typ` this crate will sign or accept.

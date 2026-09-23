@@ -46,7 +46,7 @@ use crate::PROTOCOL_FOLDER;
 pub struct Inputs {
     /// Fold only this chain. Required when the inputs hold more than one valid genesis.
     pub chain: Option<ChainId>,
-    /// Contents of every `links/*.jws` from every declared path, plus any watchdog mirror.
+    /// Contents of every `links/*.jws` from every declared path, plus any watchman mirror.
     pub links: Vec<Vec<u8>>,
     /// Contents of every `confirms/*.jws`.
     pub confirms: Vec<Vec<u8>>,
@@ -820,7 +820,7 @@ impl<'a, R: Rules> Fold<'a, R> {
 
     /// Step 2 / 3f: establish every engagement `pubky` has held for this chain from the pool
     /// and seat the governing one — the later `until` (§11.2). Several engagements are the
-    /// normal shape of a renewed watchdog, not evidence of anything; a watchdog that *shrank*
+    /// normal shape of a renewed watchman, not evidence of anything; a watchman that *shrank*
     /// its window is caught by comparing its current `engage.jws` with the parties' mirrors
     /// (§11.6), which files alone cannot order. Genesis witnesses are established before the
     /// fold; witnesses seated by a `witnesses` link when it commits.

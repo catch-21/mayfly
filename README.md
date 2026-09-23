@@ -3,7 +3,7 @@
 A verifiable chain among a small set of parties, on Pubky. Every append is a signed,
 hash-linked record on the author's own homeserver, committed by a quorum of the other parties'
 confirmations within a voting round, and replayable by anyone from files alone. An optional
-watchdog adds impartial time.
+watchman adds impartial time.
 
 The design is `docs/MAYFLY.md`. It is at v0.8 after six independent reviews; the
 implementation is guided by the invariants those reviews converged on, written down as property
@@ -20,18 +20,18 @@ crates/
   client/   pubky-mayfly-client   ChainClient: sync-before-voting, propose/confirm/reject/
                                      mirror, recover, change watching; Store and Signer traits
                                      with in-memory and Pubky SDK implementations
-  watchdog/ pubky-mayfly-watchdog Watchdog: engagement, one signed receipt per observed record
+  watchman/ pubky-mayfly-watchman Watchman: engagement, one signed receipt per observed record
                                      in causal order, consistency flags, mirror tier; Operator:
                                      free or prepaid customers, engagement from index markers,
-                                     renewal while credit lasts; the mayfly-watchdog service
+                                     renewal while credit lasts; the mayfly-watchman service
                                      binary
   demo/     mayfly-demo           the narrated shopping list on a testnet, with a live explorer
   wasm/     pubky-mayfly-wasm     the client, verifier and views for JavaScript, over a store
                                      and signer the page supplies (npm, name provisional)
 docs/
   MAYFLY.md                       the specification
-Dockerfile                        the mayfly-watchdog image (build from the parent checkout)
-docker-compose.yml                Postgres, a testnet and the watchdog, end to end
+Dockerfile                        the mayfly-watchman image (build from the parent checkout)
+docker-compose.yml                Postgres, a testnet and the watchman, end to end
 ```
 
 This directory is an independent git repository that happens to live inside a checkout of
@@ -51,10 +51,10 @@ directory out once it is.
 ## Development
 
 ```
-cargo test --workspace                                          # core invariants + client and watchdog flows
+cargo test --workspace                                          # core invariants + client and watchman flows
 cargo test -p pubky-mayfly --test invariants                    # property tests alone
 cargo test -p pubky-mayfly-client --test testnet -- --ignored   # against a real homeserver
-cargo test -p pubky-mayfly-watchdog --test testnet -- --ignored # the watchdog on a real homeserver
+cargo test -p pubky-mayfly-watchman --test testnet -- --ignored # the watchman on a real homeserver
 cargo clippy -p pubky-mayfly -p pubky-mayfly-rules -p pubky-mayfly-client \
   --no-default-features --target wasm32-unknown-unknown         # the browser build stays green
 ```
@@ -64,8 +64,8 @@ wasm32-unknown-unknown`). The client's Pubky SDK store and signer sit behind its
 `pubky-sdk` feature; the wasm build turns it off and JavaScript supplies the `Store` and
 `Signer` instead (spec §16.2.1). CI (`.github/workflows/ci.yml`) runs both builds.
 
-The client flows in `crates/client/tests/flows.rs` and the watchdog flows in
-`crates/watchdog/tests/watchdog.rs` run over an in-memory store on any machine. The same flows
+The client flows in `crates/client/tests/flows.rs` and the watchman flows in
+`crates/watchman/tests/watchman.rs` run over an in-memory store on any machine. The same flows
 in each crate's `tests/testnet.rs` run grant sessions against a `pubky-testnet`
 `EphemeralTestnet`, which needs a Postgres for the homeserver. They are `#[ignore]`d for that
 reason. Docker Postgres is enough, but the testnet's default URL uses your OS user with no
@@ -81,9 +81,9 @@ TEST_PUBKY_CONNECTION_STRING='postgres://postgres:postgres@localhost:5432/postgr
 ## The demo
 
 `crates/demo` is a narrated shopping list among three people on a local Pubky testnet, with a
-watchdog. It walks the happy paths (create, invite, join, append, converge) and the sad ones
+watchman. It walks the happy paths (create, invite, join, append, converge) and the sad ones
 (a rule refusing a proposal, a forged record, competing proposals, a tampered mirror, a party
-going quiet and being closed out with the watchdog adjudicating), pausing for Enter between
+going quiet and being closed out with the watchman adjudicating), pausing for Enter between
 steps, and serves a live explorer page showing every homeserver's files and the verified chain.
 
 ```
@@ -108,9 +108,9 @@ mode](https://explorer.pubky.app/testnet/) can browse the same homeserver's raw 
 demo runs. Stop anything else holding those ports first (another testnet, a Docker
 `homeserver-testnet`).
 
-## The watchdog service
+## The watchman service
 
-`mayfly-watchdog` (in `crates/watchdog`) is the hosted watchdog of spec §16.2.1 E: one
+`mayfly-watchman` (in `crates/watchman`) is the hosted watchman of spec §16.2.1 E: one
 identity signed in to one homeserver as one app, running an `Operator` (§11.2) on a timer.
 Its customers are pubkys, watched for free or against prepaid watch-time; it finds their chains
 from the `index/active/<chain_id>` markers their clients write anyway, engages if genesis names
@@ -118,15 +118,15 @@ it, receipts every record it observes, renews before `until` while credit lasts,
 engagement lapse when the marker moves to `index/finished/`. A sweep that fails is logged and
 tried again next interval; the service stops only on SIGINT or SIGTERM.
 
-Every flag has a `MAYFLY_WATCHDOG_*` environment variable, and `--config <file>` names a TOML
+Every flag has a `MAYFLY_WATCHMAN_*` environment variable, and `--config <file>` names a TOML
 file with the same keys in snake case; a flag or variable wins over the file, the file over
 the default. `--homeserver` is the only required setting.
 
 ```
-cargo run -p pubky-mayfly-watchdog --bin mayfly-watchdog -- \
+cargo run -p pubky-mayfly-watchman --bin mayfly-watchman -- \
   --network testnet \
   --homeserver 8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo \
-  --keypair-file ./watchdog.key \
+  --keypair-file ./watchman.key \
   --free <alice pubky> --free <bob pubky> \
   --credit <carol pubky>=604800 \
   --health-addr 127.0.0.1:8790
@@ -134,18 +134,18 @@ cargo run -p pubky-mayfly-watchdog --bin mayfly-watchdog -- \
 
 | Flag | Environment variable | Default |
 | --- | --- | --- |
-| `--network mainnet\|testnet\|testnet:<host>` | `MAYFLY_WATCHDOG_NETWORK` | `mainnet` |
-| `--homeserver <pubky>` | `MAYFLY_WATCHDOG_HOMESERVER` | required |
-| `--signup-token <token>` | `MAYFLY_WATCHDOG_SIGNUP_TOKEN` | none |
-| `--client-id <id>` | `MAYFLY_WATCHDOG_CLIENT_ID` | `watchdog.mayfly.example` |
-| `--keypair-file <path>` | `MAYFLY_WATCHDOG_KEYPAIR_FILE` | `/var/lib/mayfly-watchdog/keypair` |
-| `--free <pubky>` (repeatable) | `MAYFLY_WATCHDOG_FREE` (comma-separated) | none |
-| `--credit <pubky>=<secs>` (repeatable) | `MAYFLY_WATCHDOG_CREDIT` (comma-separated) | none |
+| `--network mainnet\|testnet\|testnet:<host>` | `MAYFLY_WATCHMAN_NETWORK` | `mainnet` |
+| `--homeserver <pubky>` | `MAYFLY_WATCHMAN_HOMESERVER` | required |
+| `--signup-token <token>` | `MAYFLY_WATCHMAN_SIGNUP_TOKEN` | none |
+| `--client-id <id>` | `MAYFLY_WATCHMAN_CLIENT_ID` | `watchman.mayfly.example` |
+| `--keypair-file <path>` | `MAYFLY_WATCHMAN_KEYPAIR_FILE` | `/var/lib/mayfly-watchman/keypair` |
+| `--free <pubky>` (repeatable) | `MAYFLY_WATCHMAN_FREE` (comma-separated) | none |
+| `--credit <pubky>=<secs>` (repeatable) | `MAYFLY_WATCHMAN_CREDIT` (comma-separated) | none |
 | `--engage-secs` / `--renew-before-secs` | `..._ENGAGE_SECS` / `..._RENEW_BEFORE_SECS` | `86400` / `3600` |
 | `--poll-ms` / `--sweep-secs` | `..._POLL_MS` / `..._SWEEP_SECS` | `5000` / `15` |
-| `--tier receipts\|mirror` | `MAYFLY_WATCHDOG_TIER` | `receipts` |
-| `--health-addr <ip:port>` | `MAYFLY_WATCHDOG_HEALTH_ADDR` | off |
-| `--config <path>` | `MAYFLY_WATCHDOG_CONFIG` | none |
+| `--tier receipts\|mirror` | `MAYFLY_WATCHMAN_TIER` | `receipts` |
+| `--health-addr <ip:port>` | `MAYFLY_WATCHMAN_HEALTH_ADDR` | off |
+| `--config <path>` | `MAYFLY_WATCHMAN_CONFIG` | none |
 
 `--client-id` decides the folder everything is published under, `/pub/<client_id>/mayfly/`;
 change it and verifiers looking for the engagement under the old folder no longer find it.
@@ -177,32 +177,32 @@ or `{"seconds": n}`), `sweeps`, `errors`, `last_sweep_at`, `last_sweep` (`engage
 
 ```
 cd ..                                                   # the pubky-homeserver checkout
-docker build -f mayfly/Dockerfile -t mayfly-watchdog .
-docker volume create mayfly-watchdog
-docker run -d --name mayfly-watchdog --restart unless-stopped \
-  -v mayfly-watchdog:/var/lib/mayfly-watchdog -p 127.0.0.1:8790:8790 \
-  -e MAYFLY_WATCHDOG_HOMESERVER=<homeserver pubky> \
-  -e MAYFLY_WATCHDOG_SIGNUP_TOKEN=<token from the homeserver's admin> \
-  -e MAYFLY_WATCHDOG_FREE=<pubky>,<pubky> \
-  -e MAYFLY_WATCHDOG_HEALTH_ADDR=0.0.0.0:8790 \
-  mayfly-watchdog
-docker logs mayfly-watchdog | head                      # the pubky to name in genesis
+docker build -f mayfly/Dockerfile -t mayfly-watchman .
+docker volume create mayfly-watchman
+docker run -d --name mayfly-watchman --restart unless-stopped \
+  -v mayfly-watchman:/var/lib/mayfly-watchman -p 127.0.0.1:8790:8790 \
+  -e MAYFLY_WATCHMAN_HOMESERVER=<homeserver pubky> \
+  -e MAYFLY_WATCHMAN_SIGNUP_TOKEN=<token from the homeserver's admin> \
+  -e MAYFLY_WATCHMAN_FREE=<pubky>,<pubky> \
+  -e MAYFLY_WATCHMAN_HEALTH_ADDR=0.0.0.0:8790 \
+  mayfly-watchman
+docker logs mayfly-watchman | head                      # the pubky to name in genesis
 ```
 
-The image runs as the non-root user `mayfly`, declares `/var/lib/mayfly-watchdog` as a volume
+The image runs as the non-root user `mayfly`, declares `/var/lib/mayfly-watchman` as a volume
 (the keypair; see above) and exposes `8790`. `docker-compose.yml` here is the local end to
 end: `postgres:18`, the testnet built from the parent `Dockerfile` with `BUILD_TARGET=testnet`
-on the well-known ports, and the watchdog against it, keypair in a named volume, health on
+on the well-known ports, and the watchman against it, keypair in a named volume, health on
 `http://127.0.0.1:8790/`:
 
 ```
-MAYFLY_WATCHDOG_FREE=<alice pubky>,<bob pubky> docker compose up --build
+MAYFLY_WATCHMAN_FREE=<alice pubky>,<bob pubky> docker compose up --build
 ```
 
 The testnet's homeserver advertises its endpoints in its own pkarr record as `127.0.0.1` and
 `localhost`, and the SDK's `testnet:<host>` form only moves the DHT bootstrap node and the
 pkarr relay to `<host>`, not the homeserver, so a sibling container cannot reach it. The
-compose file therefore runs the watchdog in the testnet container's network namespace
+compose file therefore runs the watchman in the testnet container's network namespace
 (`network_mode: service:testnet`) with the plain `testnet` network form; the file's comments
 give the alternative for a testnet on another host.
 

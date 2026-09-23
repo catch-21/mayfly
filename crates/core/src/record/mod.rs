@@ -109,7 +109,7 @@ impl<T: DeserializeOwned> Signed<T> {
     }
 }
 
-/// Sign a payload into a record. Used by clients, watchdogs and the simulator; the verifier
+/// Sign a payload into a record. Used by clients, watchmen and the simulator; the verifier
 /// never signs. `typ` must be one of [`crate::typ`] — the `pubky-*` namespace is refused.
 pub fn sign<T: serde::Serialize>(
     keypair: &pubky_common::crypto::Keypair,

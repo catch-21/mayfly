@@ -4,7 +4,7 @@ members = [
   "crates/core",
   "crates/rules",
   "crates/client",
-  "crates/watchdog",
+  "crates/watchman",
   "crates/demo",
   "crates/wasm",
 ]

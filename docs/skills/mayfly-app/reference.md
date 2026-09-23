@@ -107,19 +107,19 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
 - `KeyedSigner(clientId)`: a self-contained signer for Node and tests.
 - Errors are JS `Error`s with `name` = the client error variant, plus `Busy` and `InvalidInput`.
 
-## Watchdog (`pubky_mayfly_watchdog`)
+## Watchman (`pubky_mayfly_watchman`)
 
-- `Watchdog::new(store, signer, chain, initiator, Terms)` → `engage()`, `poll()`, `extend(until)`,
+- `Watchman::new(store, signer, chain, initiator, Terms)` → `engage()`, `poll()`, `extend(until)`,
   `run_until(stop)`, `receipts()`, `observed_at(&hash)`.
 - `Terms::receipts(until)` / `Terms::mirror(until)` / `.poll_every(ms)`.
 - `Operator::new(store, signer, terms)` → `free(pubky)`, `credit(pubky, secs)`, `engage_for(secs)`,
   `renew_before(secs)`, `sweep()` → `SweepReport { engaged, extended, lapsed, declined, receipts }`.
   Reads customers' `/pub/` for `index/active/<id>` markers; charges free customer → initiator →
   first by pubky.
-- `mayfly-watchdog` (binary, `crates/watchdog`): an `Operator` over a Pubky grant session as a
+- `mayfly-watchman` (binary, `crates/watchman`): an `Operator` over a Pubky grant session as a
   service — `--network`, `--homeserver`, `--free`, `--credit <pubky>=<secs>`, `--keypair-file`,
-  `--health-addr` (`/healthz`, `/status`); `MAYFLY_WATCHDOG_*` env or `--config` TOML. Name its
-  pubky in `GenesisSpec::witnesses`. README, "The watchdog service".
+  `--health-addr` (`/healthz`, `/status`); `MAYFLY_WATCHMAN_*` env or `--config` TOML. Name its
+  pubky in `GenesisSpec::witnesses`. README, "The watchman service".
 
 ## Spec map
 
@@ -131,6 +131,6 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
 | Flows | §8 (create 8.1, append 8.2, competing 8.3, finishing 8.4) |
 | Verification | §9 (algorithm 9.2) |
 | Rules interface | §10 |
-| Watchdogs | §11 (engagement/credit 11.2, receipts/stopwatch 11.3, misbehaviour 11.6) |
+| Watchmen | §11 (engagement/credit 11.2, receipts/stopwatch 11.3, misbehaviour 11.6) |
 | Security analysis, residuals | §12 |
 | Plan and status | §16 |

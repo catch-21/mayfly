@@ -3,7 +3,7 @@
 //! The chain key is the Grant `cnf` key and the Grant JWS is the attestation. A verifier checks
 //! a Grant offline: signature under `iss` (the party's pubky), `cnf == kid`, and write
 //! capability on the folder the party declared. It never compares a record's `ts` with
-//! `iat..exp` (§5.2); expiry is enforced by co-signers' clocks and by watchdog receipts.
+//! `iat..exp` (§5.2); expiry is enforced by co-signers' clocks and by watchman receipts.
 
 use pubky_common::auth::grant::GrantClaims;
 use pubky_common::crypto::PublicKey;
@@ -21,7 +21,7 @@ pub struct Seat {
     pub client_id: String,
     /// Folders this party has declared, in seq order; the last is current (§7).
     pub paths: Vec<String>,
-    /// Grant `exp` in Unix seconds, for the watchdog-receipt window check (§9.2 step 4).
+    /// Grant `exp` in Unix seconds, for the watchman-receipt window check (§9.2 step 4).
     pub grant_exp: u64,
     /// `BLAKE3(nonce)` from the genesis confirmation, when the rules want reveals (§6.6).
     pub commit: Option<String>,

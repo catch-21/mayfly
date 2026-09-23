@@ -1,4 +1,4 @@
-//! The watchdog's identity on disk.
+//! The watchman's identity on disk.
 //!
 //! The file holds the 32 secret bytes as 64 hex characters and a newline; it is created with
 //! mode `0600` on Unix. The pubky derived from it is what chains name in their genesis

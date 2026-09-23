@@ -1,17 +1,17 @@
 [package]
-name = "pubky-mayfly-watchdog"
-description = "Mayfly watchdog: engagement, one signed receipt per observed record in causal order, consistency flags, mirror tier."
+name = "pubky-mayfly-watchman"
+description = "Mayfly watchman: engagement, one signed receipt per observed record in causal order, consistency flags, mirror tier."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# The hosted watchdog service (§16.2.1 E): an `Operator` over a Pubky grant session, swept on
+# The hosted watchman service (§16.2.1 E): an `Operator` over a Pubky grant session, swept on
 # a timer, with a health endpoint. The library API is unchanged by it.
 [[bin]]
-name = "mayfly-watchdog"
-path = "src/bin/mayfly-watchdog/main.rs"
+name = "mayfly-watchman"
+path = "src/bin/mayfly-watchman/main.rs"
 
 [dependencies]
 pubky-mayfly = { path = "../core" }

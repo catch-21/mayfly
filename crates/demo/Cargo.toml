@@ -16,7 +16,7 @@ path = "src/main.rs"
 pubky-mayfly = { path = "../core" }
 pubky-mayfly-client = { path = "../client" }
 pubky-mayfly-rules = { path = "../rules" }
-pubky-mayfly-watchdog = { path = "../watchdog" }
+pubky-mayfly-watchman = { path = "../watchman" }
 pubky-testnet.workspace = true
 pubky-common.workspace = true
 base64.workspace = true

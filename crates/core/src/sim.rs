@@ -298,7 +298,7 @@ pub struct Witness {
     pub client: Keypair,
     /// Grant binding `client` to `identity` with write access to `path`.
     pub grant: String,
-    /// The watchdog app's id.
+    /// The watchman app's id.
     pub client_id: String,
     /// `/pub/<client_id>/mayfly/`.
     pub path: String,
@@ -574,7 +574,7 @@ impl<R: Rules> Sim<R> {
     fn new_witness(now_s: u64) -> Witness {
         let identity = Keypair::random();
         let client = Keypair::random();
-        let client_id = "watchdog.example".to_string();
+        let client_id = "watchman.example".to_string();
         let grant = mint_grant(&identity, &client, &client_id, now_s);
         Witness {
             identity,

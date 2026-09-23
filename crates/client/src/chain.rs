@@ -347,7 +347,7 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
     }
 
     /// Write `index/active/<chain>` with the chain URL I joined through as its body (§7): a
-    /// UI listing, and the request a credited watchdog acts on (§11.2).
+    /// UI listing, and the request a credited watchman acts on (§11.2).
     async fn mark_active(&mut self) -> Result<(), Error> {
         let file = self.my_folder().active(&self.chain);
         let body = self.chain_url(&self.initiator).into_bytes();

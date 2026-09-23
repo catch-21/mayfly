@@ -1,7 +1,7 @@
 //! A shopping list on Mayfly, told step by step on a local Pubky testnet.
 //!
 //! Three people on three homeservers keep one list. Every append is a signed record in the
-//! author's own storage, committed when the others confirm it, receipted by a watchdog for
+//! author's own storage, committed when the others confirm it, receipted by a watchman for
 //! time, and verifiable by anyone from the files. The demo walks the happy paths (create, join,
 //! append, converge) and the sad ones (a rule refusing a proposal, a forged record, competing
 //! proposals, a tampered mirror, a party going quiet and being closed out) — pausing for a key
@@ -36,7 +36,7 @@ use pubky_mayfly_client::{
     Action, ChainClient, Error, GenesisSpec, PubkyStore, SessionSigner, Signer, Store,
 };
 use pubky_mayfly_rules::list::{Body, List};
-use pubky_mayfly_watchdog::{Operator, Terms};
+use pubky_mayfly_watchman::{Operator, Terms};
 
 use explorer::{Actor, Explorer, StepLog};
 
@@ -126,8 +126,8 @@ impl Demo {
         self.record(format!("! {text}"));
     }
 
-    fn watchdog(&mut self, text: &str) {
-        ui::watchdog(text);
+    fn watchman(&mut self, text: &str) {
+        ui::watchman(text);
         self.record(format!("👁 {text}"));
     }
 
@@ -135,8 +135,8 @@ impl Demo {
         self.people.iter().map(|p| p.name.to_string()).collect()
     }
 
-    async fn sweep(&mut self) -> pubky_mayfly_watchdog::SweepReport {
-        self.operator.sweep().await.expect("watchdog sweep")
+    async fn sweep(&mut self) -> pubky_mayfly_watchman::SweepReport {
+        self.operator.sweep().await.expect("watchman sweep")
     }
 
     /// Everyone online acts; returns `(name, actions)` for those who did anything.
@@ -384,7 +384,7 @@ async fn main() {
             signer,
         });
     }
-    let (dog_store, dog_signer) = session(&pubky, &homeserver, "watchdog.example").await;
+    let (dog_store, dog_signer) = session(&pubky, &homeserver, "watchman.example").await;
     let mut actors: Vec<Actor> = people
         .iter()
         .map(|p| Actor {
@@ -398,7 +398,7 @@ async fn main() {
         .collect();
     actors.push(Actor {
         name: "Wendy".into(),
-        role: "watchdog",
+        role: "watchman",
         pubky: dog_signer.pubky(),
         app: dog_signer.client_id(),
         folder: dog_signer.path(),
@@ -447,14 +447,14 @@ async fn main() {
     ui::kv(
         "Wendy",
         &format!(
-            "pubky {}  app {}  (the watchdog)",
+            "pubky {}  app {}  (the watchman)",
             ui::short(&dog_signer.pubky()),
             dog_signer.client_id()
         ),
     );
     ui::gap();
     demo.say("Each person signed in to an app with a Pubky Grant. The Grant's client key is the chain key: it signs every record, and anyone can check the Grant binds it to the person's pubky (§5). Nobody has a shared server; each writes only to their own /pub/ folder.");
-    demo.say("Wendy is a watchdog: an impartial third party who receipts what she sees with her clock. She watches Alice's chains for free — this is a demo.");
+    demo.say("Wendy is a watchman: an impartial third party who receipts what she sees with her clock. She watches Alice's chains for free — this is a demo.");
     demo.end(false).await;
 
     // ── Step 2 ────────────────────────────────────────────────────────────────────────────────
@@ -498,7 +498,7 @@ async fn main() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     if engaged {
-        demo.watchdog("engaged: witness/<chain>/engage.jws under Wendy's own folder, with her Grant embedded so anyone can verify her key");
+        demo.watchman("engaged: witness/<chain>/engage.jws under Wendy's own folder, with her Grant embedded so anyone can verify her key");
     } else {
         demo.note("Wendy has not found the marker yet; she polls, and will");
     }
@@ -738,7 +738,7 @@ async fn main() {
     let acted = demo.everyone_acts().await;
     demo.describe_actions(&acted);
     demo.sweep().await;
-    demo.watchdog("Wendy receipted the proposal and Bob's confirmation, with her clock");
+    demo.watchman("Wendy receipted the proposal and Bob's confirmation, with her clock");
     demo.clients[0].sync().await.expect("sync");
     if let Some(Status::Stalled { awaiting, .. }) =
         demo.clients[0].verdict().map(|v| v.status.clone())
@@ -771,7 +771,7 @@ async fn main() {
         demo.note(&format!("provisional: the close is {close:?} until a witness quorum has receipts covering it").to_lowercase());
     }
     demo.sweep().await;
-    demo.watchdog("Wendy receipted the close and Bob's agreement. Her receipts show Carol silent for longer than the allowance: the close is adjudicated, and final.");
+    demo.watchman("Wendy receipted the close and Bob's agreement. Her receipts show Carol silent for longer than the allowance: the close is adjudicated, and final.");
     let acted = demo.everyone_acts().await;
     demo.describe_actions(&acted);
     let v = demo.end(true).await.expect("verdict");
@@ -806,7 +806,7 @@ async fn main() {
     if agreed.windows(2).all(|w| w[0] == w[1]) {
         demo.ok("all three agree on the same committed hashes");
     }
-    demo.say("Wendy's folder holds no links (receipts tier), only receipts and her engagement; a mirror-tier watchdog would also be a full copy. Carol, back online, would find the list closed and her Cheese vote late.");
+    demo.say("Wendy's folder holds no links (receipts tier), only receipts and her engagement; a mirror-tier watchman would also be a full copy. Carol, back online, would find the list closed and her Cheese vote late.");
     demo.end(true).await;
 
     println!(

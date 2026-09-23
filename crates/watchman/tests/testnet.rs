@@ -1,10 +1,10 @@
 //! Phase 5 (§16.2) against a real homeserver: three grant sessions maintain a chain while a
-//! fourth, on its own app, is the watchdog genesis names. The parties find its engagement from
+//! fourth, on its own app, is the watchman genesis names. The parties find its engagement from
 //! its `/pub/` alone, every link comes out *witnessed 1/1*, receipts are embedded and mirrored,
 //! and an anonymous verifier sees the same from any party's folder.
 //!
 //! Needs a Postgres, like `pubky-mayfly-client`'s `tests/testnet.rs`; `#[ignore]`d for that
-//! reason. `tests/watchdog.rs` covers the same flow over the in-memory store.
+//! reason. `tests/watchman.rs` covers the same flow over the in-memory store.
 
 use pubky_testnet::pubky::{ClientId, Keypair, Pubky};
 use pubky_testnet::pubky_homeserver::ConfigToml;
@@ -14,7 +14,7 @@ use serde_json::json;
 use pubky_mayfly::sim::Tally;
 use pubky_mayfly_client::chain::verify_from;
 use pubky_mayfly_client::{ChainClient, GenesisSpec, PubkyStore, SessionSigner, Signer, Store};
-use pubky_mayfly_watchdog::{Terms, Watchdog};
+use pubky_mayfly_watchman::{Terms, Watchman};
 
 type Client = ChainClient<Tally, PubkyStore, SessionSigner>;
 
@@ -47,8 +47,8 @@ fn now_s() -> u64 {
 
 #[tokio::test]
 #[pubky_testnet::test]
-#[ignore = "needs a Postgres for the homeserver; run with `cargo test -p pubky-mayfly-watchdog --test testnet -- --ignored`"]
-async fn a_watchdog_session_receipts_a_chain_on_a_homeserver() {
+#[ignore = "needs a Postgres for the homeserver; run with `cargo test -p pubky-mayfly-watchman --test testnet -- --ignored`"]
+async fn a_watchman_session_receipts_a_chain_on_a_homeserver() {
     let testnet = EphemeralTestnet::builder()
         .config(ConfigToml::default_test_config())
         .build()
@@ -62,7 +62,7 @@ async fn a_watchdog_session_receipts_a_chain_on_a_homeserver() {
     for app in apps {
         parties.push(session(&pubky, &homeserver, app).await);
     }
-    let (dog_store, dog_signer) = session(&pubky, &homeserver, "watchdog.example").await;
+    let (dog_store, dog_signer) = session(&pubky, &homeserver, "watchman.example").await;
     let pubkies: Vec<String> = parties.iter().map(|(_, s)| s.pubky()).collect();
 
     let mut spec = GenesisSpec::new(pubkies.clone()).with_apps(&apps);
@@ -73,7 +73,7 @@ async fn a_watchdog_session_receipts_a_chain_on_a_homeserver() {
     let chain = alice.chain().clone();
     let initiator = (pubkies[0].clone(), parties[0].1.path());
 
-    let mut dog = Watchdog::new(
+    let mut dog = Watchman::new(
         dog_store,
         dog_signer.clone(),
         chain.clone(),
@@ -102,7 +102,7 @@ async fn a_watchdog_session_receipts_a_chain_on_a_homeserver() {
         assert_eq!(
             v.engaged.len(),
             1,
-            "found from the watchdog's /pub/ listing"
+            "found from the watchman's /pub/ listing"
         );
         assert_eq!(v.engaged[0].kid, dog_signer.kid());
         assert_eq!(v.committed[0].witnessed, (0, 1));
@@ -174,6 +174,6 @@ async fn a_watchdog_session_receipts_a_chain_on_a_homeserver() {
         for k in &report.verdict.committed {
             assert_eq!(k.witnessed, (1, 1));
         }
-        assert_eq!(report.folders.len(), 4, "three parties and the watchdog");
+        assert_eq!(report.folders.len(), 4, "three parties and the watchman");
     }
 }

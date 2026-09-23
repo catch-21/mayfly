@@ -1,9 +1,9 @@
-//! `mayfly-watchdog`: the hosted watchdog of §16.2.1 E.
+//! `mayfly-watchman`: the hosted watchman of §16.2.1 E.
 //!
 //! One identity, kept in a file, signed in to one homeserver as one app; an
-//! [`Operator`](pubky_mayfly_watchdog::Operator) over that session, swept on a timer, watching
+//! [`Operator`](pubky_mayfly_watchman::Operator) over that session, swept on a timer, watching
 //! its customers' chains for free or against prepaid watch-time (§11.2); `/healthz` and
-//! `/status` beside it. Configuration is flags, `MAYFLY_WATCHDOG_*` variables or a TOML file
+//! `/status` beside it. Configuration is flags, `MAYFLY_WATCHMAN_*` variables or a TOML file
 //! ([`config`]); the loop is [`service`]; the identity file is [`keyfile`].
 
 #![forbid(unsafe_code)]
@@ -23,7 +23,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use pubky_mayfly_client::{PubkyStore, SessionSigner, Signer};
-use pubky_mayfly_watchdog::{Operator, Terms};
+use pubky_mayfly_watchman::{Operator, Terms};
 
 use config::{Cli, Config, Network, Tier};
 use health::{Identity, Status};
@@ -32,7 +32,7 @@ use service::Service;
 type Failure = Box<dyn std::error::Error + Send + Sync>;
 
 /// How often, and how many times, to try to sign in before giving up on startup: a compose
-/// stack's homeserver may take a while to come up after the watchdog does.
+/// stack's homeserver may take a while to come up after the watchman does.
 const STARTUP_ATTEMPTS: u32 = 12;
 const STARTUP_RETRY: Duration = Duration::from_secs(5);
 
@@ -42,7 +42,7 @@ async fn main() -> ExitCode {
     let config = match Config::load(cli) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("mayfly-watchdog: {e}");
+            eprintln!("mayfly-watchman: {e}");
             return ExitCode::from(2);
         }
     };
@@ -54,7 +54,7 @@ async fn main() -> ExitCode {
     match run(config).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            error!(error = %e, "mayfly-watchdog stopped");
+            error!(error = %e, "mayfly-watchman stopped");
             ExitCode::FAILURE
         }
     }
@@ -107,7 +107,7 @@ async fn run(config: Config) -> Result<(), Failure> {
         renew_before_secs = config.renew_before_secs,
         poll_ms = config.poll_ms,
         sweep_secs = config.sweep_secs,
-        "watchdog signed in"
+        "watchman signed in"
     );
     for pubky in &config.free {
         info!(customer = %pubky, credit = "free", "customer");

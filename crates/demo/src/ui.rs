@@ -60,8 +60,8 @@ pub fn note(text: &str) {
     println!("  {YELLOW}!{RESET} {text}");
 }
 
-/// The watchdog speaks.
-pub fn watchdog(text: &str) {
+/// The watchman speaks.
+pub fn watchman(text: &str) {
     println!("  {MAGENTA}👁{RESET} {text}");
 }
 

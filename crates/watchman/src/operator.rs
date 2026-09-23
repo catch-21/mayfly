@@ -18,7 +18,7 @@ use pubky_mayfly::hash::ChainId;
 use pubky_mayfly_client::layout::Folder;
 use pubky_mayfly_client::{Error, Signer, Store};
 
-use crate::{Terms, Watchdog};
+use crate::{Terms, Watchman};
 
 /// How a customer pays (§11.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub struct Operator<S: Store + Clone, K: Signer + Clone> {
     engagement_secs: u64,
     renew_before_secs: u64,
     customers: BTreeMap<String, Credit>,
-    chains: BTreeMap<ChainId, Watchdog<S, K>>,
+    chains: BTreeMap<ChainId, Watchman<S, K>>,
     /// Which customer each chain is charged to.
     charged_to: BTreeMap<ChainId, String>,
     /// Markers already acted on: `(customer, path)`.
@@ -102,7 +102,7 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
         }
     }
 
-    /// Replace the wall clock (tests). Shared with every watchdog this operator creates.
+    /// Replace the wall clock (tests). Shared with every watchman this operator creates.
     pub fn with_clock(mut self, clock: impl Fn() -> u64 + Send + Sync + 'static) -> Self {
         self.clock = Arc::new(clock);
         self
@@ -141,8 +141,8 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
         self.customers.get(pubky).copied()
     }
 
-    /// The watchdogs currently engaged, by chain.
-    pub fn watching(&self) -> impl Iterator<Item = (&ChainId, &Watchdog<S, K>)> {
+    /// The watchmen currently engaged, by chain.
+    pub fn watching(&self) -> impl Iterator<Item = (&ChainId, &Watchman<S, K>)> {
         self.chains.iter()
     }
 
@@ -290,7 +290,7 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
         let customer = m.customer.as_str();
         let initiator = m.initiator.clone();
         let clock = Arc::clone(&self.clock);
-        let mut dog = Watchdog::new(
+        let mut dog = Watchman::new(
             self.store.clone(),
             self.signer.clone(),
             chain.clone(),

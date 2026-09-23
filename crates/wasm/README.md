@@ -23,7 +23,7 @@ const signer = await signerFromSession(session);
 const alice = await ChainClient.create("list/1", store, signer, {
   parties: [alicePubky, bobPubky],
   apps: ["list.example", "list.example"],
-  witnesses: [watchdogPubky],
+  witnesses: [watchmanPubky],
 });
 const invite = alice.inviteUrl();
 

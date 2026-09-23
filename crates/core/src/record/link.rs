@@ -25,7 +25,7 @@ pub struct Link {
     /// strings, sorted by confirmer `kid` (byte order of the z32 string). Empty for genesis.
     #[serde(default)]
     pub confirms: Vec<String>,
-    /// Watchdog receipts of the QC-completing confirmation of `prev`, one per engaged witness
+    /// Watchman receipts of the QC-completing confirmation of `prev`, one per engaged witness
     /// whose receipt the author holds, sorted by witness `kid`. May be empty; never required to
     /// be complete (§11.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

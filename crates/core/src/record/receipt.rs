@@ -1,11 +1,11 @@
-//! Watchdog receipt payload (§11.3).
+//! Watchman receipt payload (§11.3).
 
 use serde::{Deserialize, Serialize};
 
 use crate::hash::ChainId;
 
 /// One receipt per observed record. A receipt binds `(chain, record hash, typ, seq, round, by,
-/// observed_at)` under the watchdog's engagement key. It proves the watchdog claims to have
+/// observed_at)` under the watchman's engagement key. It proves the watchman claims to have
 /// seen those bytes at that time — nothing about their validity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,9 +29,9 @@ pub struct Receipt {
     pub round: Option<u32>,
     /// `kid` of the observed record's signer (the revoked `kid`, for a revocation).
     pub by: String,
-    /// The watchdog's engagement signing key (z32), as established in `engage.jws`.
+    /// The watchman's engagement signing key (z32), as established in `engage.jws`.
     pub kid: String,
-    /// When the watchdog saw it, Unix milliseconds.
+    /// When the watchman saw it, Unix milliseconds.
     pub observed_at: u64,
     /// Where it saw it: the homeserver user and event cursor.
     pub source: Source,

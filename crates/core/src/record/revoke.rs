@@ -3,7 +3,7 @@
 //! A `keys/` file, not a chain link: no `seq`, never a candidate, never a vote. Signed by
 //! **another** key the same identity has attested — a current Grant's `cnf` under the same
 //! pubky, with that Grant embedded — since the compromised key cannot be trusted to disown
-//! itself. Its effect on the fold is through a watchdog receipt of it (§9.2 step 4): records by
+//! itself. Its effect on the fold is through a watchman receipt of it (§9.2 step 4): records by
 //! the revoked `kid` that a witness quorum observed later are outside their window.
 
 use serde::{Deserialize, Serialize};

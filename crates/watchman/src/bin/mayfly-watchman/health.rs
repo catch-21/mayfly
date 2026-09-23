@@ -2,7 +2,7 @@
 //!
 //! `/healthz` is `200` while the last sweep succeeded within three sweep intervals and `503`
 //! otherwise, including before the first sweep. `/status` is a JSON snapshot: who the
-//! watchdog is, what it is watching, its customers and their credit, and the last sweep.
+//! watchman is, what it is watching, its customers and their credit, and the last sweep.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -16,12 +16,12 @@ use axum::Router;
 use serde::Serialize;
 
 use pubky_mayfly_client::{Signer, Store};
-use pubky_mayfly_watchdog::{Credit, Operator, SweepReport};
+use pubky_mayfly_watchman::{Credit, Operator, SweepReport};
 
-/// Who the watchdog is; fixed for the life of the process.
+/// Who the watchman is; fixed for the life of the process.
 #[derive(Debug, Clone, Serialize)]
 pub struct Identity {
-    /// The watchdog's pubky: what genesis names.
+    /// The watchman's pubky: what genesis names.
     pub pubky: String,
     /// The Grant client key that signs engagements and receipts.
     pub kid: String,
@@ -297,10 +297,10 @@ mod tests {
         Identity {
             pubky: "dog".into(),
             kid: "kid".into(),
-            client_id: "watchdog.example".into(),
+            client_id: "watchman.example".into(),
             network: "testnet".into(),
             homeserver: "hs".into(),
-            path: "/pub/watchdog.example/mayfly/".into(),
+            path: "/pub/watchman.example/mayfly/".into(),
         }
     }
 
@@ -311,10 +311,10 @@ mod tests {
         let v = serde_json::to_value(status.snapshot()).unwrap();
         assert_eq!(v["pubky"], "dog");
         assert_eq!(v["kid"], "kid");
-        assert_eq!(v["client_id"], "watchdog.example");
+        assert_eq!(v["client_id"], "watchman.example");
         assert_eq!(v["network"], "testnet");
         assert_eq!(v["homeserver"], "hs");
-        assert_eq!(v["path"], "/pub/watchdog.example/mayfly/");
+        assert_eq!(v["path"], "/pub/watchman.example/mayfly/");
         assert_eq!(v["healthy"], false);
         assert_eq!(v["watching"], serde_json::json!([]));
         assert_eq!(v["customers"], serde_json::json!([]));
@@ -348,7 +348,7 @@ mod tests {
             declined: vec![(
                 "alice".into(),
                 chain.clone(),
-                pubky_mayfly_watchdog::Declined::NotNamed,
+                pubky_mayfly_watchman::Declined::NotNamed,
             )],
             receipts: 3,
             ..SweepReport::default()

@@ -112,7 +112,7 @@ pub struct SeatView {
 /// A witness engaged at the head.
 #[derive(Debug, Clone, Serialize)]
 pub struct EngagedView {
-    /// The watchdog's pubky.
+    /// The watchman's pubky.
     pub pubky: String,
     /// Its signing key.
     pub kid: String,

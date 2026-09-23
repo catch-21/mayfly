@@ -4,7 +4,7 @@
 use pubky_mayfly::hash::{ChainId, Hash};
 use pubky_mayfly::PROTOCOL_FOLDER;
 
-/// A party's (or watchdog's) protocol folder: `/pub/<client_id>/mayfly/`.
+/// A party's (or watchman's) protocol folder: `/pub/<client_id>/mayfly/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Folder(String);
 
@@ -43,13 +43,13 @@ impl Folder {
         ChainFolder(format!("{}chains/{}/", self.0, chain))
     }
 
-    /// `witness/<chain_id>/` — on a watchdog's storage.
+    /// `witness/<chain_id>/` — on a watchman's storage.
     pub fn witness(&self, chain: &ChainId) -> WitnessFolder {
         WitnessFolder(format!("{}witness/{}/", self.0, chain))
     }
 
     /// `index/active/<chain_id>`: the marker a party writes for a chain it is in (§7). Its
-    /// body is the chain URL the party joined through; a watchdog reads it as a request to
+    /// body is the chain URL the party joined through; a watchman reads it as a request to
     /// watch (§11.2).
     pub fn active(&self, chain: &ChainId) -> String {
         format!("{}index/active/{}", self.0, chain)
@@ -156,7 +156,7 @@ impl ChainFolder {
     }
 }
 
-/// `…/witness/<chain_id>/` on a watchdog.
+/// `…/witness/<chain_id>/` on a watchman.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WitnessFolder(String);
 
