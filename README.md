@@ -23,10 +23,15 @@ crates/
   watchdog/ pubky-mayfly-watchdog Watchdog: engagement, one signed receipt per observed record
                                      in causal order, consistency flags, mirror tier; Operator:
                                      free or prepaid customers, engagement from index markers,
-                                     renewal while credit lasts
+                                     renewal while credit lasts; the mayfly-watchdog service
+                                     binary
   demo/     mayfly-demo           the narrated shopping list on a testnet, with a live explorer
+  wasm/     pubky-mayfly-wasm     the client, verifier and views for JavaScript, over a store
+                                     and signer the page supplies (npm, name provisional)
 docs/
   MAYFLY.md                       the specification
+Dockerfile                        the mayfly-watchdog image (build from the parent checkout)
+docker-compose.yml                Postgres, a testnet and the watchdog, end to end
 ```
 
 This directory is an independent git repository that happens to live inside a checkout of
@@ -103,12 +108,125 @@ mode](https://explorer.pubky.app/testnet/) can browse the same homeserver's raw 
 demo runs. Stop anything else holding those ports first (another testnet, a Docker
 `homeserver-testnet`).
 
+## The watchdog service
+
+`mayfly-watchdog` (in `crates/watchdog`) is the hosted watchdog of spec §16.2.1 E: one
+identity signed in to one homeserver as one app, running an `Operator` (§11.2) on a timer.
+Its customers are pubkys, watched for free or against prepaid watch-time; it finds their chains
+from the `index/active/<chain_id>` markers their clients write anyway, engages if genesis names
+it, receipts every record it observes, renews before `until` while credit lasts, and lets an
+engagement lapse when the marker moves to `index/finished/`. A sweep that fails is logged and
+tried again next interval; the service stops only on SIGINT or SIGTERM.
+
+Every flag has a `MAYFLY_WATCHDOG_*` environment variable, and `--config <file>` names a TOML
+file with the same keys in snake case; a flag or variable wins over the file, the file over
+the default. `--homeserver` is the only required setting.
+
+```
+cargo run -p pubky-mayfly-watchdog --bin mayfly-watchdog -- \
+  --network testnet \
+  --homeserver 8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo \
+  --keypair-file ./watchdog.key \
+  --free <alice pubky> --free <bob pubky> \
+  --credit <carol pubky>=604800 \
+  --health-addr 127.0.0.1:8790
+```
+
+| Flag | Environment variable | Default |
+| --- | --- | --- |
+| `--network mainnet\|testnet\|testnet:<host>` | `MAYFLY_WATCHDOG_NETWORK` | `mainnet` |
+| `--homeserver <pubky>` | `MAYFLY_WATCHDOG_HOMESERVER` | required |
+| `--signup-token <token>` | `MAYFLY_WATCHDOG_SIGNUP_TOKEN` | none |
+| `--client-id <id>` | `MAYFLY_WATCHDOG_CLIENT_ID` | `watchdog.mayfly.example` |
+| `--keypair-file <path>` | `MAYFLY_WATCHDOG_KEYPAIR_FILE` | `/var/lib/mayfly-watchdog/keypair` |
+| `--free <pubky>` (repeatable) | `MAYFLY_WATCHDOG_FREE` (comma-separated) | none |
+| `--credit <pubky>=<secs>` (repeatable) | `MAYFLY_WATCHDOG_CREDIT` (comma-separated) | none |
+| `--engage-secs` / `--renew-before-secs` | `..._ENGAGE_SECS` / `..._RENEW_BEFORE_SECS` | `86400` / `3600` |
+| `--poll-ms` / `--sweep-secs` | `..._POLL_MS` / `..._SWEEP_SECS` | `5000` / `15` |
+| `--tier receipts\|mirror` | `MAYFLY_WATCHDOG_TIER` | `receipts` |
+| `--health-addr <ip:port>` | `MAYFLY_WATCHDOG_HEALTH_ADDR` | off |
+| `--config <path>` | `MAYFLY_WATCHDOG_CONFIG` | none |
+
+`--client-id` decides the folder everything is published under, `/pub/<client_id>/mayfly/`;
+change it and verifiers looking for the engagement under the old folder no longer find it.
+Logging is `tracing`; `RUST_LOG` is respected and defaults to `info`.
+
+**The keypair.** On first start the service generates a keypair, writes the 32 secret bytes as
+hex to `--keypair-file` (mode `0600`, parent directories created), and logs the resulting pubky
+loudly; afterwards it loads the file. That pubky is what chains name in their genesis
+(`GenesisSpec::witnesses`) and what every engagement and receipt is verified against, so the
+file has to outlive the process and the container: lose it and every engagement it holds is
+stranded, and every chain that named it has to seat a new witness with a `witnesses` link
+(§11.2). Back it up like any signing key.
+
+**Signing in.** The service signs in first, which is the ordinary restart. If that fails —
+no account yet, or a testnet whose DHT has forgotten the `_pubky` record — it signs up with
+`--signup-token` if given; a homeserver that already has the account answers `409 Conflict`,
+in which case only the record is republished. Then it signs in. Start-up tries this a dozen
+times, five seconds apart, so a homeserver still coming up does not fail the service.
+
+**Health.** With `--health-addr`, `GET /healthz` is `200` while the last sweep succeeded within
+three sweep intervals and `503` otherwise (including before the first sweep), and `GET /status`
+is JSON: `pubky`, `kid`, `client_id`, `network`, `homeserver`, `path`, `healthy`, `watching`
+(`chain`, `until`, `receipts` per engaged chain), `customers` (`pubky`, `credit` as `"free"`
+or `{"seconds": n}`), `sweeps`, `errors`, `last_sweep_at`, `last_sweep` (`engaged`,
+`extended`, `lapsed`, `declined`, `receipts`) and `last_error`.
+
+**Docker.** The image is built from the *parent* checkout, because the workspace depends on
+`../pubky-common`, `../pubky-sdk` and `../pubky-testnet` by path (see "Layout"):
+
+```
+cd ..                                                   # the pubky-homeserver checkout
+docker build -f mayfly/Dockerfile -t mayfly-watchdog .
+docker volume create mayfly-watchdog
+docker run -d --name mayfly-watchdog --restart unless-stopped \
+  -v mayfly-watchdog:/var/lib/mayfly-watchdog -p 127.0.0.1:8790:8790 \
+  -e MAYFLY_WATCHDOG_HOMESERVER=<homeserver pubky> \
+  -e MAYFLY_WATCHDOG_SIGNUP_TOKEN=<token from the homeserver's admin> \
+  -e MAYFLY_WATCHDOG_FREE=<pubky>,<pubky> \
+  -e MAYFLY_WATCHDOG_HEALTH_ADDR=0.0.0.0:8790 \
+  mayfly-watchdog
+docker logs mayfly-watchdog | head                      # the pubky to name in genesis
+```
+
+The image runs as the non-root user `mayfly`, declares `/var/lib/mayfly-watchdog` as a volume
+(the keypair; see above) and exposes `8790`. `docker-compose.yml` here is the local end to
+end: `postgres:18`, the testnet built from the parent `Dockerfile` with `BUILD_TARGET=testnet`
+on the well-known ports, and the watchdog against it, keypair in a named volume, health on
+`http://127.0.0.1:8790/`:
+
+```
+MAYFLY_WATCHDOG_FREE=<alice pubky>,<bob pubky> docker compose up --build
+```
+
+The testnet's homeserver advertises its endpoints in its own pkarr record as `127.0.0.1` and
+`localhost`, and the SDK's `testnet:<host>` form only moves the DHT bootstrap node and the
+pkarr relay to `<host>`, not the homeserver, so a sibling container cannot reach it. The
+compose file therefore runs the watchdog in the testnet container's network namespace
+(`network_mode: service:testnet`) with the plain `testnet` network form; the file's comments
+give the alternative for a testnet on another host.
+
+## Mayfly for JavaScript
+
+`crates/wasm` is the client, the verifier and the plain-data views (`crates/client/src/view.rs`)
+as one wasm-bindgen module. The page supplies storage and signing as objects — built from an
+SDK `Pubky` and grant `Session` by `js/pubky-glue.js` — so `@synonymdev/pubky` stays the only
+network code and no session object crosses between the two wasm modules (spec §16.2.1).
+
+```
+cd crates/wasm
+npm run build     # wasm-pack → pkg/
+npm test          # the shared-list flow of crates/client/tests/list.rs, through the module
+```
+
+`crates/wasm/README.md` shows the API. The npm name is provisional.
+
 ## Building on Mayfly
 
 `docs/skills/mayfly-app/SKILL.md` is the guide to writing an app or a rules module, for people
 and agents alike, with an API cheat-sheet (`reference.md`) beside it; `AGENTS.md` points agents
 there on entry. The shape of an app is
 `crates/client/tests/list.rs`: join from an invite URL, call `act()` on every change, put
-`Action::Decision`s to the user.
+`Action::Decision`s to the user. In JavaScript the same shape is `crates/wasm/tests/list.test.mjs`.
 
 British English in prose and identifiers. No trailing whitespace.

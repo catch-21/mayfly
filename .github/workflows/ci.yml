@@ -52,9 +52,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ runner.temp }}/pubky-homeserver/mayfly
-      # Core, rules and the client (without the SDK feature) must stay WASM-safe (§16.2.1 A).
+      # Core, rules, the client (without the SDK feature) and the wasm module must stay
+      # WASM-safe (§16.2.1 A, C).
       - name: clippy wasm32
         run: >
           cargo clippy -p pubky-mayfly -p pubky-mayfly-rules -p pubky-mayfly-client
+          -p pubky-mayfly-wasm
           --no-default-features --target wasm32-unknown-unknown -- -D warnings
         working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: build the npm package and run its tests
+        run: npm run build && npm test
+        working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly/crates/wasm

@@ -1,0 +1,83 @@
+# Local end to end (MAYFLY.md §16.2.1 E): Postgres, a Pubky testnet on its well-known ports,
+# and the watchdog service against it. Run from this directory:
+#
+#   MAYFLY_WATCHDOG_FREE=<alice pubky>,<bob pubky> docker compose up --build
+#
+# Then create a chain naming the watchdog's pubky (printed at start-up and at
+# http://127.0.0.1:8790/status) from any client on the testnet — `cargo run -p mayfly-demo`
+# is not it (it starts its own testnet); the client tests and the web app of §16.2.1 D are.
+#
+# Networking. The testnet's homeserver publishes its endpoints in its own pkarr record: a
+# direct pubky-TLS endpoint at `public_ip` (127.0.0.1 by default) port 6287, and an ICANN
+# fallback at `icann_domain` (`localhost`) port 6286. The SDK's `testnet:<host>` form only
+# moves the DHT bootstrap node and the pkarr relay to `<host>`; the homeserver is still
+# reached at what its record says, and from a sibling container 127.0.0.1 and localhost are
+# the sibling itself. So the watchdog here shares the testnet container's network namespace
+# (`network_mode: service:testnet`): its `localhost` is the testnet's, the plain `testnet`
+# network form applies, and its health port is published on the testnet service. To run the
+# watchdog in a container of its own, give the testnet a homeserver config whose
+# `pkdns.public_ip` is an address the watchdog can reach, and use `testnet:<host>` for the
+# relay and bootstrap node.
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # The parent Dockerfile builds `pubky-testnet` with BUILD_TARGET=testnet: a StaticTestnet
+  # (DHT bootstrap 6881/udp, pkarr relay 15411, http relay 15412, homeserver 6286 HTTP,
+  # 6287 pubky TLS, 6288 admin), in memory, its homeserver at the fixed pubky
+  # 8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo with open signup.
+  testnet:
+    build:
+      context: ..
+      args:
+        BUILD_TARGET: testnet
+    environment:
+      TEST_PUBKY_CONNECTION_STRING: postgres://postgres:postgres@postgres:5432/postgres
+    ports:
+      - "15411:15411"
+      - "15412:15412"
+      - "6286:6286"
+      - "6287:6287"
+      - "6288:6288"
+      - "6881:6881/udp"
+      # The watchdog's /healthz and /status: it shares this service's network namespace.
+      - "8790:8790"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  watchdog:
+    build:
+      context: ..
+      dockerfile: mayfly/Dockerfile
+    network_mode: "service:testnet"
+    environment:
+      MAYFLY_WATCHDOG_NETWORK: testnet
+      MAYFLY_WATCHDOG_HOMESERVER: 8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo
+      MAYFLY_WATCHDOG_CLIENT_ID: watchdog.mayfly.example
+      MAYFLY_WATCHDOG_HEALTH_ADDR: 0.0.0.0:8790
+      MAYFLY_WATCHDOG_SWEEP_SECS: "5"
+      # Customers, comma-separated pubkys; empty means the watchdog engages nothing.
+      MAYFLY_WATCHDOG_FREE: ${MAYFLY_WATCHDOG_FREE:-}
+      MAYFLY_WATCHDOG_CREDIT: ${MAYFLY_WATCHDOG_CREDIT:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      # The identity. Chains name this pubky in genesis; keep the volume or they lose their
+      # witness. Note the testnet above is in memory: the account is recreated on each start
+      # from the same keypair, so the pubky stays stable.
+      - watchdog-state:/var/lib/mayfly-watchdog
+    depends_on:
+      - testnet
+    restart: unless-stopped
+
+volumes:
+  watchdog-state:

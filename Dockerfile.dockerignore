@@ -1,0 +1,10 @@
+# Read by BuildKit for `docker build -f mayfly/Dockerfile .` run from the pubky-homeserver
+# checkout; paths are relative to that context root.
+target/
+mayfly/target/
+**/target/
+**/.git
+**/node_modules/
+pubky-sdk/bindings/js/pkg/
+mayfly/docs/
+mayfly/.github/

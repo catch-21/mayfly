@@ -373,8 +373,14 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
 
     /// Replace the wall clock used for `ts` (tests).
     pub fn with_clock(mut self, clock: impl Fn() -> u64 + MaybeSend + MaybeSync + 'static) -> Self {
-        self.clock = Box::new(clock);
+        self.set_clock(clock);
         self
+    }
+
+    /// Replace the wall clock in place: Unix milliseconds. An app with a corrected clock, or
+    /// a test, sets it here; skips (§6.3) are judged on it.
+    pub fn set_clock(&mut self, clock: impl Fn() -> u64 + MaybeSend + MaybeSync + 'static) {
+        self.clock = Box::new(clock);
     }
 
     /// Tell the client where else to look: a party's folder learned out of band (an invite
@@ -396,6 +402,11 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
     /// The signer.
     pub fn signer(&self) -> &K {
         &self.signer
+    }
+
+    /// The rules.
+    pub fn rules(&self) -> &R {
+        &self.rules
     }
 
     /// The store.

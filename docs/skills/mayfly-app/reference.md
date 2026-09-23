@@ -86,6 +86,26 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
 - Layout (`pubky_mayfly_client::layout`): `Folder::for_app(client_id)` → `/pub/<client_id>/mayfly/`;
   `.chain(&id)` → `links/`, `confirms/`, `rejects/`, `receipts/<kid>/`; `.witness(&id)`;
   `.active(&id)` / `.finished(&id)`; `parse_chain_url(url)`.
+- Views (`pubky_mayfly_client::view`): `chain_view(&rules, &verdict, &suspects)` → `ChainView`
+  (parties, status, committed `LinkView`s with body and base64url hash, open seq, seats,
+  witnesses, anomalies, suspects, rules state as JSON); `ActionView::from(&action)`;
+  `decode_record(bytes, name, etag)` → `RecordView` (typ, payload with embedded JWSs unpacked,
+  `signature_ok`, `hash_matches_etag`, `hash_matches_name`). All `Serialize`; what a page renders.
+
+## JavaScript (`crates/wasm`, npm name provisional)
+
+- `await init()`; then `ChainClient.create(rulesId, store, signer, spec)` /
+  `ChainClient.openUrl(rulesId, store, signer, url)` with `store` and `signer` as plain objects
+  (`js/pubky-glue.js`: `storeFromPubky(pubky, session?)`, `signerFromSession(session)`).
+- Methods mirror the Rust client in camelCase: `sync()` → `ChainView`, `join()`, `act()` →
+  `ActionView[]` (`kind: "confirmed" | "decision" | "my_turn" | …`), `proposeBody(body)`,
+  `confirm(hash)`, `reject`, `repropose`, `pass`, `skip`, `proposeClose("agreed"|"finished")`,
+  `proposeAbandoned([i])`, `confirmAbandoned`, `mirror()`, `waitForChange(ms)`, `state()`,
+  `view()`, `myIndex()`, `setClock(fn)`, `setPolicy({...})`. Hashes are base64url strings.
+- Free functions: `verifyFrom(rulesId, store, chainUrl)` → `ChainView`; `decodeRecord(bytes,
+  name, etag?)` → `RecordView`; `parseChainUrl`, `chainUrl`, `designatedProposer`, `rulesIds`.
+- `KeyedSigner(clientId)`: a self-contained signer for Node and tests.
+- Errors are JS `Error`s with `name` = the client error variant, plus `Busy` and `InvalidInput`.
 
 ## Watchdog (`pubky_mayfly_watchdog`)
 
@@ -96,6 +116,10 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
   `renew_before(secs)`, `sweep()` → `SweepReport { engaged, extended, lapsed, declined, receipts }`.
   Reads customers' `/pub/` for `index/active/<id>` markers; charges free customer → initiator →
   first by pubky.
+- `mayfly-watchdog` (binary, `crates/watchdog`): an `Operator` over a Pubky grant session as a
+  service — `--network`, `--homeserver`, `--free`, `--credit <pubky>=<secs>`, `--keypair-file`,
+  `--health-addr` (`/healthz`, `/status`); `MAYFLY_WATCHDOG_*` env or `--config` TOML. Name its
+  pubky in `GenesisSpec::witnesses`. README, "The watchdog service".
 
 ## Spec map
 

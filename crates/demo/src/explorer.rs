@@ -19,6 +19,7 @@ use pubky_mayfly::fold::{self, Status, Verdict};
 use pubky_mayfly::hash::{ChainId, Hash};
 use pubky_mayfly::record::{CloseBody, Kind};
 use pubky_mayfly_client::chain::verify_from;
+use pubky_mayfly_client::view::{decode_record, RecordView};
 use pubky_mayfly_client::{PubkyStore, Store};
 use pubky_mayfly_rules::list::List;
 
@@ -42,29 +43,6 @@ pub struct FileView {
     pub step: usize,
     /// The file decoded as a record (§14, evidence panel); `None` for markers and keys.
     pub record: Option<RecordView>,
-}
-
-/// A record file, decoded for inspection: what the bytes say and whether they check out.
-#[derive(Serialize, Clone)]
-pub struct RecordView {
-    /// The raw JWS compact string as stored — the identity.
-    pub raw: String,
-    /// JWS header `typ`, or an error if the file is not a well-formed record.
-    pub typ: Option<String>,
-    /// The payload, with every embedded JWS (`confirms`, `receipts`, `grant`, `engage`)
-    /// unpacked the same way, for reading. Display only; the verifier reads the bytes.
-    pub payload: serde_json::Value,
-    /// Which key the record claims (`kid`, or `by` for a revocation).
-    pub claimed_key: Option<String>,
-    /// Whether the Ed25519 signature verifies under the claimed key. `None` if there is none
-    /// or it does not parse. Whether that key is *seated* is the fold's question, not this one.
-    pub signature_ok: Option<bool>,
-    /// Whether `BLAKE3(bytes)` matches the homeserver's `ETag` for the file.
-    pub hash_matches_etag: Option<bool>,
-    /// Whether the file name's `<h16>` matches the hash of its bytes (§7); `None` when the name
-    /// carries no hash.
-    pub hash_matches_name: Option<bool>,
-    pub error: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -444,107 +422,6 @@ impl Explorer {
     }
 }
 
-/// Decode one record file for the evidence panel: split the JWS, unpack the payload (and
-/// every JWS embedded in it), check the signature under the key the record names, and check
-/// the bytes against the ETag and the file name.
-fn decode_record(bytes: &[u8], rel: &str, etag: Option<&Hash>) -> RecordView {
-    let hash = Hash::of(bytes);
-    let raw = String::from_utf8_lossy(bytes).into_owned();
-    let hash_matches_etag = etag.map(|e| *e == hash);
-    let hash_matches_name = rel
-        .rsplit('/')
-        .next()
-        .and_then(|n| n.strip_suffix(".jws"))
-        .and_then(|n| n.split('-').nth(1))
-        .filter(|seg| seg.len() == 16)
-        .map(|seg| seg == hash.h16());
-    let mut view = RecordView {
-        raw: raw.clone(),
-        typ: None,
-        payload: serde_json::Value::Null,
-        claimed_key: None,
-        signature_ok: None,
-        hash_matches_etag,
-        hash_matches_name,
-        error: None,
-    };
-    let (header, payload, signing_input, signature) = match split_jws(&raw) {
-        Ok(parts) => parts,
-        Err(e) => {
-            view.error = Some(e);
-            return view;
-        }
-    };
-    view.typ = header
-        .get("typ")
-        .and_then(|t| t.as_str())
-        .map(str::to_string);
-    view.claimed_key = payload
-        .get("kid")
-        .or_else(|| payload.get("by"))
-        .and_then(|k| k.as_str())
-        .map(str::to_string);
-    view.signature_ok = view.claimed_key.as_deref().and_then(|k| {
-        let key = pubky_common::crypto::PublicKey::try_from(k).ok()?;
-        let sig = pubky_common::crypto::Signature::from_slice(&signature).ok()?;
-        Some(key.verify(signing_input.as_bytes(), &sig).is_ok())
-    });
-    view.payload = unpack_embedded(payload);
-    view
-}
-
-/// `(header, payload, signing_input, signature)` of a compact JWS, or why not.
-fn split_jws(
-    compact: &str,
-) -> Result<(serde_json::Value, serde_json::Value, String, Vec<u8>), String> {
-    use base64::Engine;
-    let url = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let parts: Vec<&str> = compact.trim().split('.').collect();
-    let [h, p, s] = parts.as_slice() else {
-        return Err("not a JWS: expected three dot-separated parts".into());
-    };
-    let header: serde_json::Value = url
-        .decode(h)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .ok_or("header is not base64url JSON")?;
-    let payload: serde_json::Value = url
-        .decode(p)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .ok_or("payload is not base64url JSON")?;
-    let signature = url.decode(s).map_err(|_| "signature is not base64url")?;
-    Ok((header, payload, format!("{h}.{p}"), signature))
-}
-
-/// Replace every string that is itself a compact JWS with `{typ, payload, sig}` so embedded
-/// confirmations, receipts, Grants and engagements read as what they are. Recursive, so a
-/// confirmation embedded in a link shows its own Grant unpacked too.
-fn unpack_embedded(v: serde_json::Value) -> serde_json::Value {
-    use serde_json::Value;
-    match v {
-        Value::String(s) => match split_jws(&s) {
-            Ok((header, payload, _, sig)) if header.get("alg").is_some() => {
-                use base64::Engine;
-                let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&sig);
-                serde_json::json!({
-                    "typ": header.get("typ").cloned().unwrap_or(Value::Null),
-                    "payload": unpack_embedded(payload),
-                    "sig": format!("{}…", &sig_b64[..sig_b64.len().min(12)]),
-                })
-            }
-            _ => Value::String(s),
-        },
-        Value::Array(items) => Value::Array(items.into_iter().map(unpack_embedded).collect()),
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(k, v)| (k, unpack_embedded(v)))
-                .collect(),
-        ),
-        other => other,
-    }
-}
-
 /// What a file is, from where it sits (§7).
 fn describe(rel: &str) -> String {
     let segs: Vec<&str> = rel.split('/').collect();
@@ -649,51 +526,5 @@ pub fn status_line(s: &Status, parties: &[String]) -> String {
             subjects.iter().map(name).collect::<Vec<_>>().join(", "),
             outcome.summary
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pubky_common::crypto::Keypair;
-    use pubky_mayfly::typ;
-
-    #[test]
-    fn a_signed_record_decodes_verifies_and_unpacks_embedded_jws() {
-        let confirmer = Keypair::random();
-        let confirm = pubky_mayfly::record::sign(
-            &confirmer,
-            typ::CONFIRM,
-            &serde_json::json!({ "v": 1, "seq": 1, "kid": confirmer.public_key().z32() }),
-        )
-        .unwrap();
-        let author = Keypair::random();
-        let link = pubky_mayfly::record::sign(
-            &author,
-            typ::LINK,
-            &serde_json::json!({
-                "v": 1, "seq": 2, "kid": author.public_key().z32(),
-                "confirms": [String::from_utf8(confirm).unwrap()],
-            }),
-        )
-        .unwrap();
-        let hash = Hash::of(&link);
-        let name = format!("chains/x/links/00000002-{}.jws", hash.h16());
-        let view = decode_record(&link, &name, Some(&hash));
-        assert_eq!(view.typ.as_deref(), Some(typ::LINK));
-        assert_eq!(view.signature_ok, Some(true));
-        assert_eq!(view.hash_matches_etag, Some(true));
-        assert_eq!(view.hash_matches_name, Some(true));
-        assert_eq!(view.payload["confirms"][0]["typ"], typ::CONFIRM);
-        assert_eq!(view.payload["confirms"][0]["payload"]["seq"], 1);
-
-        // Swap one character of the signature for another valid base64url character.
-        let mut tampered = link.clone();
-        let last = tampered.len() - 1;
-        tampered[last] = if tampered[last] == b'A' { b'B' } else { b'A' };
-        let view = decode_record(&tampered, &name, Some(&hash));
-        assert_eq!(view.signature_ok, Some(false));
-        assert_eq!(view.hash_matches_etag, Some(false));
-        assert_eq!(view.hash_matches_name, Some(false));
     }
 }

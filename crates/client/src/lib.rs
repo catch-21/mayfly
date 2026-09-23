@@ -27,6 +27,7 @@ pub mod pubky_store;
 pub mod signer;
 pub mod store;
 pub mod time;
+pub mod view;
 
 pub use chain::{Action, ChainClient, GenesisSpec, Policy, SyncReport};
 #[cfg(feature = "pubky-sdk")]

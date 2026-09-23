@@ -1,0 +1,29 @@
+[package]
+name = "pubky-mayfly-wasm"
+description = "Mayfly for the browser and Node: the chain client, verifier and views as a wasm-bindgen module, over a JavaScript-provided store and signer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false # npm only; see package.json
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pubky-mayfly = { path = "../core" }
+pubky-mayfly-rules = { path = "../rules" }
+pubky-mayfly-client = { path = "../client", default-features = false }
+pubky-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait = "0.1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
+# `Keypair::random` (KeyedSigner) and the timestamp crate reach getrandom 0.2, which needs
+# the `js` backend in the browser and Node.
+getrandom = { version = "0.2", features = ["js"] }

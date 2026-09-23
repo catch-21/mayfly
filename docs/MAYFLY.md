@@ -1998,7 +1998,20 @@ Order: A → B → C, with E in parallel from the start (it depends on nothing a
 
 *Status:* A and B done. Core, rules and the client without its `pubky-sdk`
 feature build for `wasm32-unknown-unknown`, enforced by CI; the SDK fork's JS bindings expose
-`signJws`, `grantJws`, `clientPublicKey` and `PublicKey.verify`.
+`signJws`, `grantJws`, `clientPublicKey` and `PublicKey.verify`. C done: `crates/wasm` exports
+`ChainClient`, `verifyFrom`, `decodeRecord` and the helpers over duck-typed `Store` and
+`Signer` objects, with `js/pubky-glue.js` building both from an SDK `Pubky` and grant
+`Session`; the plain-data views moved from the demo into `pubky_mayfly_client::view` so the
+demo, the module and the coming viewer render from one implementation; the Node test replays
+the `list.rs` flow — create, join, append, competing proposals through a skip, close,
+bystander verification, a tampered mirror caught — through the module. E done: `mayfly-watchdog` in
+`crates/watchdog` takes its configuration from flags, `MAYFLY_WATCHDOG_*` variables or TOML,
+keeps its identity in a file, signs up or in as the account's state requires, sweeps an
+`Operator` on a timer and serves `/healthz` and `/status`; the multi-stage `Dockerfile` and
+`docker-compose.yml` (Postgres, testnet, watchdog) are in the repository root. One finding for
+F: the testnet homeserver's record advertises `127.0.0.1` and `localhost`, and the SDK's
+`testnet:<host>` form moves only the relay and bootstrap node, so a containerised watchdog
+shares the testnet container's network namespace rather than running beside it.
 
 ### 16.3 SDK changes
 

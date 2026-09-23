@@ -1,0 +1,6 @@
+# For a build whose context is this directory. The service image is built from the parent
+# checkout instead (`docker build -f mayfly/Dockerfile .` there), where BuildKit reads
+# `Dockerfile.dockerignore` beside the Dockerfile; keep the two in step.
+target/
+.git
+.github/

@@ -1,0 +1,29 @@
+{
+  "name": "@synonymdev/mayfly",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mayfly for JavaScript: the chain client, verifier and views, over a store and signer you provide (the Pubky SDK in the browser).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pubky/mayfly.git"
+  },
+  "type": "module",
+  "main": "pkg/mayfly.js",
+  "types": "pkg/mayfly.d.ts",
+  "files": [
+    "pkg/mayfly.js",
+    "pkg/mayfly.d.ts",
+    "pkg/mayfly_bg.wasm",
+    "pkg/mayfly_bg.wasm.d.ts",
+    "js/pubky-glue.js",
+    "js/pubky-glue.d.ts"
+  ],
+  "scripts": {
+    "build": "npx --yes --package wasm-pack -c 'wasm-pack build --release --target web --out-dir pkg --out-name mayfly'",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
