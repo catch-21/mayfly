@@ -1,7 +1,8 @@
 //! Phase 5 (§16.2) over the in-memory store: a watchman engages, receipts a three-party chain
 //! in causal order, and the parties' folds report every link *witnessed 1/1*, embed its
 //! receipts and mirror them; an abandoned close is merely asserted until the watchman's
-//! receipts adjudicate it; a double vote and a misnamed mirror are receipted as inconsistent;
+//! receipts adjudicate it; a party's reject is receipted as itself, and a second vote in that
+//! round is receipted as inconsistent, as are a double vote and a misnamed mirror;
 //! the `mirror` tier keeps byte copies; a lapsed engagement receipts nothing.
 //!
 //! `tests/testnet.rs` runs the first flow over `PubkyStore` against an `EphemeralTestnet`.
@@ -13,7 +14,7 @@ use pubky_common::crypto::Keypair;
 use serde_json::json;
 
 use pubky_mayfly::close::CloseState;
-use pubky_mayfly::fold::Status;
+use pubky_mayfly::fold::{AnomalyKind, Status};
 use pubky_mayfly::hash::Hash;
 use pubky_mayfly::record::{CloseReason, Confirmation, Link, Signed};
 use pubky_mayfly::sim::{Storage, Tally};
@@ -443,6 +444,113 @@ async fn a_double_vote_and_a_misnamed_mirror_are_receipted_as_inconsistent() {
         })
         .expect("Bob's first vote stands");
     assert_ne!(bobs_real_vote.record, forged_hash);
+}
+
+/// A refusal is the party's vote, receipted like any other record. The watchman does not
+/// become a voter by receipting it, and a later confirmation by the same key in that round
+/// is a second vote: `consistent: false`, attributed to the party.
+#[tokio::test]
+async fn a_watchman_receipts_a_reject_and_flags_a_second_vote() {
+    let mut w = world(Terms::receipts).await;
+    w.dog.poll().await.unwrap();
+    let l1 = w.clients[0]
+        .propose("add", json!({ "n": 1 }))
+        .await
+        .unwrap();
+    sync_all(&mut w.clients).await;
+    w.clients[1].reject(l1).await.unwrap();
+    sync_all(&mut w.clients).await;
+    let report = w.dog.poll().await.unwrap();
+    assert!(
+        report.inconsistent.is_empty(),
+        "a refusal is one vote, not a split view: {report:?}"
+    );
+    let bob_kid = w.actors[1].signer.kid();
+    let dog_kid = w.dog.signer().kid();
+    let reject_receipt = w
+        .dog
+        .receipts()
+        .find(|i| {
+            let p = &i.receipt.payload;
+            p.by == bob_kid && p.typ == typ::REJECT && p.consistent
+        })
+        .expect("the refusal was receipted");
+    assert_eq!(reject_receipt.receipt.payload.seq, Some(1));
+    for c in &w.clients {
+        let v = c.verdict().unwrap();
+        assert!(
+            v.anomalies.iter().any(|a| {
+                a.kind == AnomalyKind::Obstruction && a.against.as_deref() == Some(bob_kid.as_str())
+            }),
+            "refusing the sole proposal is the party's obstruction: {:?}",
+            v.anomalies
+        );
+        assert!(
+            v.anomalies
+                .iter()
+                .all(|a| a.against.as_deref() != Some(dog_kid.as_str())),
+            "the watchman did not vote: {:?}",
+            v.anomalies
+        );
+        assert!(!v.is_final());
+        assert_eq!(v.committed_hashes().len(), 1);
+    }
+
+    let bob = &w.actors[1];
+    let chain = w.clients[0].chain().clone();
+    let bob_folder = Folder::from_path(&bob.signer.path()).chain(&chain);
+    let forged = Confirmation {
+        v: PROTOCOL_VERSION,
+        chain: chain.clone(),
+        seq: 1,
+        round: Some(0),
+        link: l1.to_base64url(),
+        kid: bob_kid.clone(),
+        ts: w.clock.now(),
+        state: "irrelevant".into(),
+        grant: None,
+        path: None,
+        commit: None,
+    };
+    let forged_bytes =
+        pubky_mayfly::record::sign(bob.signer.keypair(), typ::CONFIRM, &forged).unwrap();
+    let forged_hash = Hash::of(&forged_bytes);
+    bob.store
+        .put(&bob_folder.confirm(1, &l1), forged_bytes)
+        .await
+        .unwrap();
+    let report = w.dog.poll().await.unwrap();
+    assert!(
+        report.inconsistent.contains(&forged_hash),
+        "a confirm after a reject is a second vote: {report:?}"
+    );
+    let second = w
+        .dog
+        .receipts()
+        .find(|i| i.record == forged_hash)
+        .map(|i| i.receipt.payload.clone())
+        .unwrap();
+    assert!(!second.consistent);
+    assert_eq!(second.by, bob_kid);
+    sync_all(&mut w.clients).await;
+    for c in &w.clients {
+        let v = c.verdict().unwrap();
+        assert!(
+            v.anomalies.iter().any(|a| {
+                a.kind == AnomalyKind::Equivocation
+                    && a.against.as_deref() == Some(bob_kid.as_str())
+            }),
+            "{:?}",
+            v.anomalies
+        );
+        assert!(
+            v.anomalies
+                .iter()
+                .all(|a| a.against.as_deref() != Some(dog_kid.as_str())),
+            "{:?}",
+            v.anomalies
+        );
+    }
 }
 
 #[tokio::test]

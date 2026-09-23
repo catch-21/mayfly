@@ -16,7 +16,9 @@ use proptest::prelude::*;
 
 use pubky_mayfly::fold::{verify, AnomalyKind, Config, Inputs, Status};
 use pubky_mayfly::hash::{ChainId, Hash};
+use pubky_mayfly::record::{Receipt, Signed};
 use pubky_mayfly::sim::{Behaviour, Choice, RandomTally, SeqPlan, Sim, Tally, WitnessBehaviour};
+use pubky_mayfly::typ;
 use pubky_mayfly::vote::{designated, RoundVotes, Vote};
 use pubky_mayfly::witness::{adjudicate, quorum_size, Verdict};
 use pubky_mayfly::Error;
@@ -875,6 +877,122 @@ fn refusing_an_agreed_close_is_not_obstruction() {
         v.anomalies
     );
     assert!(!v.is_final(), "a refused close leaves the chain open");
+}
+
+/// §6.3: the agreed-close exemption is only that close. Refusing a `finished` close of the sole
+/// proposal is still obstruction.
+#[test]
+fn refusing_a_finished_close_is_obstruction() {
+    let mut sim = Sim::new(Tally, 2, 0, &["chess.example"], 2);
+    sim.bootstrap().unwrap();
+    let archive = sim.propose(0, "archive", serde_json::json!({})).unwrap();
+    sim.confirm(1, archive).unwrap();
+    let close = sim
+        .propose_close(0, pubky_mayfly::record::CloseReason::Finished)
+        .unwrap();
+    sim.reject(1, close).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert!(
+        v.anomalies.iter().any(|a| {
+            a.kind == AnomalyKind::Obstruction
+                && a.against.as_deref() == Some(sim.parties[1].kid().as_str())
+        }),
+        "refusing a finished close is obstruction: {:?}",
+        v.anomalies
+    );
+}
+
+/// §6.3: refusing one proposal while another is live in the round ends the round. It is not
+/// obstruction, which is only a reject of the sole valid proposal.
+#[test]
+fn refusing_one_of_two_proposals_is_not_obstruction() {
+    let mut sim = Sim::new(Tally, 3, 0, &["chess.example"], 3);
+    sim.bootstrap().unwrap();
+    let first = sim
+        .propose(0, "add", serde_json::json!({ "n": 1 }))
+        .unwrap();
+    sim.propose(1, "add", serde_json::json!({ "n": 2 }))
+        .unwrap();
+    sim.reject(2, first).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert!(
+        v.anomalies
+            .iter()
+            .all(|a| a.kind != AnomalyKind::Obstruction),
+        "a reject beside a competing proposal is not obstruction: {:?}",
+        v.anomalies
+    );
+}
+
+/// §9.2 step 4, §11.2: one witness whose `observed_at` sits days away from the other two does
+/// not put a record outside its Grant window. The window check fires only when the quorum
+/// agrees the record is outside.
+#[test]
+fn a_minority_witness_clock_does_not_decide_a_grant_window() {
+    const DAY_S: u64 = 86_400;
+    const DAY_MS: i64 = 86_400_000;
+
+    let mut sim = Sim::new(Tally, 3, 3, &["chess.example"], 3);
+    sim.reissue_grant(0, DAY_S);
+    sim.bootstrap().unwrap();
+    // Genesis was receipted on the honest clock, inside the window. Only the later link is
+    // seen by a witness running two days ahead.
+    sim.witnesses[2].behaviour = WitnessBehaviour::Skewed(2 * DAY_MS);
+    sim.play(&single(0, 3, 1)).unwrap();
+    let link = *sim.committed_hashes().last().unwrap();
+    let inputs = sim.inputs_all();
+    let mut observed_at = std::collections::BTreeMap::new();
+    for bytes in &inputs.receipts {
+        let Ok(r) = Signed::<Receipt>::decode(bytes.clone(), typ::WITNESS) else {
+            continue;
+        };
+        if r.payload.record == link.to_base64url() {
+            observed_at.insert(r.payload.kid.clone(), r.payload.observed_at);
+        }
+    }
+    assert_eq!(observed_at.len(), 3, "each witness receipted the link");
+    let mut times: Vec<u64> = observed_at.values().copied().collect();
+    times.sort_unstable();
+    assert!(
+        times[2] - times[0] >= DAY_S * 1000,
+        "the minority clock is at least a day away from the others: {times:?}"
+    );
+    let v = verify(&Tally, &inputs, &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes(),
+        sim.committed_hashes(),
+        "one wild timestamp does not drop the link"
+    );
+    assert!(
+        v.anomalies
+            .iter()
+            .all(|a| a.kind != AnomalyKind::GrantWindow),
+        "a minority clock does not decide the Grant window: {:?}",
+        v.anomalies
+    );
+
+    // The same link falls once every engaged witness places it after `exp`.
+    let mut sim = Sim::new(Tally, 3, 3, &["chess.example"], 3);
+    sim.reissue_grant(0, DAY_S);
+    sim.bootstrap().unwrap();
+    for w in &mut sim.witnesses {
+        w.behaviour = WitnessBehaviour::Skewed(2 * DAY_MS);
+    }
+    let before = sim.committed_hashes();
+    sim.play(&single(0, 3, 1)).unwrap();
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes(),
+        before,
+        "the quorum agrees the link is outside the Grant window"
+    );
+    assert!(
+        v.anomalies
+            .iter()
+            .any(|a| a.kind == AnomalyKind::GrantWindow),
+        "{:?}",
+        v.anomalies
+    );
 }
 
 // ─── Reveals (§6.6) ───────────────────────────────────────────────────────────────────────────

@@ -173,7 +173,11 @@ Use the chain from B after B9, and the chain from E after E4.
 Not part of the first session. Each of these is `unchecked` in the session log. Run them once
 the failures above are addressed. They are the boundaries the first session touched only by
 accident, or did not touch, including what the viewer shows for a chain that is finished and
-for one that is only part-way there.
+for one that is only part-way there. I7, I22 and I23 are the dispute cases: refusing an
+agreed close, a watchman receipting that refusal, and a minority witness clock. Refusing a
+finished close is still obstruction. The list app does not offer that close;
+`refusing_a_finished_close_is_obstruction` pins it, and
+`refusing_one_of_two_proposals_is_not_obstruction` pins a reject beside a competing proposal.
 
 | Id | Steps | Expected |
 | --- | --- | --- |
@@ -183,7 +187,7 @@ for one that is only part-way there.
 | I4 | A and C already have the three-member list open. B joins. | Without a reload, A and C show B joined and an empty list. They agree with B and with the viewer. |
 | I5 | Add an item. If the page says the list is settling, wait a few seconds and add it again. | The item confirms. The form does not stay disabled, and it does not fail with no error. |
 | I6 | Close a list, then look at Your lists. | That chain appears once, marked finished. It is not also listed as open. |
-| I7 | On a fresh two-member list with one item, propose to close, and have the other member refuse. Then add another item. | No Obstruction on either app or in the viewer. The new item confirms. The chain is not final. |
+| I7 | On a fresh two-member list with one item, propose to close, and have the other member refuse. Then add another item. | No Obstruction on either app or in the viewer. The new item confirms. The chain is not final. Same dispute as `refusing_an_agreed_close_is_not_obstruction`. |
 | I8 | Tick an item, then edit its text. | The new text, still ticked, same place. The viewer edit names the same id. |
 | I9 | Add "Milk", confirm it, then add "Milk" again. | Two rows, both unticked. Both confirm. |
 | I10 | Add an item whose text is `Café, 2×`. | Both apps and the viewer show that text exactly. |
@@ -198,6 +202,8 @@ for one that is only part-way there.
 | I19 | A creates a two-member list. Before B joins, paste the invite into the viewer. | The viewer shows the chain. It is not an error and it does not stay on "Fetching the chain…". Status is not final and the live line is present. The creator's genesis file is listed and decodes. B is not a seat. No red file row. |
 | I20 | Both members have joined and one item is confirmed. B adds a second item. Open the viewer before A confirms. | Status is not final and the live line is present. The checklist shows the first item and not the second. No red file row. When A confirms, the second item appears within about 4 seconds, without a manual refresh. |
 | I21 | Close a two-member list by agreement, with no earlier refuse. Paste that invite into the viewer. | Status final. Polling has stopped. The timeline ends with a close. The checklist matches the list page. No anomaly. Refresh does not start polling again. |
+| I22 | Two members, watchman engaged, one confirmed item. A proposes to close and B refuses. Wait for a sweep, then A adds another item. | No Obstruction on either app or in the viewer, and the watchman is not named on any anomaly. The viewer lists a receipt for the refusal, signature ok. `/status` errors stay 0. The new item confirms. The chain is not final. |
+| I23 | Not staged from the list page: one watchman is the whole quorum, so a single wild timestamp is not a minority. Run `cargo test -p pubky-mayfly --test invariants a_minority_witness_clock_does_not_decide_a_grant_window`. | The test passes. Three witnesses, one of them two days ahead of a Grant that still has a day to run: the link stays committed and there is no GrantWindow. The same link is outside the window when all three clocks agree that it is. |
 
 ## Session log
 
@@ -292,6 +298,8 @@ Stranger, and member C for later sections: `6dg5mnoi8du4ibxar7wqm8fnthoqz9hsrggx
 | I19 | unchecked | Viewer, chain not yet joined by everyone. |
 | I20 | unchecked | Viewer, one change confirmed and another still open. |
 | I21 | unchecked | Viewer, chain closed by agreement. |
+| I22 | unchecked | Watchman receipts a refused close. |
+| I23 | pass | `a_minority_witness_clock_does_not_decide_a_grant_window`: one clock two days ahead leaves the link committed, with no GrantWindow. All three clocks agreeing places it outside the window. |
 
 ## Failures
 
