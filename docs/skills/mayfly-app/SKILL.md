@@ -19,6 +19,8 @@ below refer to it. Read the section before touching what it governs.
 | `pubky-mayfly-client` | `ChainClient`: the app's whole surface. `Store`/`Signer` traits with `MemoryStore`/`LocalSigner` (tests) and `PubkyStore`/`SessionSigner` (Pubky SDK). |
 | `pubky-mayfly-watchman` | `Watchman` (one chain) and `Operator` (many chains, customers, credit). Run it as a service; apps only *name* a watchman in genesis. |
 | `mayfly-demo` (`crates/demo`) | The worked example: a narrated shopping list on a testnet with a live explorer. Read `src/main.rs` for how an app drives `ChainClient` and a watchman end to end, and `src/explorer.rs` for how a bystander reads and renders a chain. |
+| `pubky-mayfly-wasm` (`crates/wasm`) | The client, verifier and views for JavaScript, over a `Store` and `Signer` the page supplies; `js/pubky-glue.js` builds both from the SDK. |
+| `apps/list`, `apps/view` | The web apps: the shared list for its members (`src/useList.ts` is the app loop in React) and the read-only chain viewer for anyone (`src/mayfly.ts` is the folder walk). |
 
 Full API cheat‑sheet: [reference.md](reference.md).
 

@@ -18,6 +18,19 @@ use pubky_mayfly::rules::{PartyIndex, Rules};
 use crate::chain::Action;
 use crate::store::Listed;
 
+/// The terms genesis names, readable before the chain commits (§8.1).
+#[derive(Debug, Clone, Serialize)]
+pub struct Arrangement {
+    /// Rules id pinned in genesis.
+    pub rules: String,
+    /// Every party's pubky, the initiator first.
+    pub parties: Vec<String>,
+    /// Watchmen named in genesis.
+    pub witnesses: Vec<String>,
+    /// Confirmations a link needs, including the author's.
+    pub confirm_quorum: u32,
+}
+
 /// A committed link.
 #[derive(Debug, Clone, Serialize)]
 pub struct LinkView {
@@ -120,6 +133,8 @@ pub struct EngagedView {
     pub until: u64,
     /// Its polling interval.
     pub poll_ms: u64,
+    /// Its protocol folder, where `witness/<chain_id>/` lives.
+    pub path: String,
 }
 
 /// Where the chain stands, flattened for display.
@@ -268,6 +283,7 @@ pub fn chain_view<R: Rules>(rules: &R, v: &Verdict, suspects: &[Listed]) -> Chai
                 kid: w.kid.clone(),
                 until: w.until,
                 poll_ms: w.poll_ms,
+                path: w.path.clone(),
             })
             .collect(),
         anomalies: v
@@ -482,12 +498,18 @@ pub struct RecordView {
 pub fn decode_record(bytes: &[u8], name: &str, etag: Option<&Hash>) -> RecordView {
     let hash = Hash::of(bytes);
     let raw = String::from_utf8_lossy(bytes).into_owned();
-    let hash_matches_name = name
-        .rsplit('/')
-        .next()
-        .and_then(|n| n.strip_suffix(".jws"))
-        .and_then(|n| n.split('-').find(|seg| seg.len() == 16))
-        .map(|seg| seg == hash.h16());
+    // Only `links/` and `receipts/` filenames claim to be the hash of these bytes (§7).
+    // A confirmation is named by the link it votes for, so that segment is not checked here.
+    let claims_own_hash = name.split('/').any(|p| p == "links" || p == "receipts");
+    let hash_matches_name = if claims_own_hash {
+        name.rsplit('/')
+            .next()
+            .and_then(|n| n.strip_suffix(".jws"))
+            .and_then(|n| n.split('-').find(|seg| seg.len() == 16))
+            .map(|seg| seg == hash.h16())
+    } else {
+        None
+    };
     let mut view = RecordView {
         raw: raw.clone(),
         hash: hash.to_base64url(),
@@ -619,13 +641,17 @@ mod tests {
     }
 
     #[test]
-    fn mirrored_confirmation_names_carry_the_hash_in_the_second_segment() {
+    fn a_confirmation_is_named_by_the_link_it_votes_for() {
         let bytes = b"not a record";
         let hash = Hash::of(bytes);
-        let name = format!("confirms/00000007-{}-somekid.jws", hash.h16());
-        let view = decode_record(bytes, &name, None);
+        let confirm = format!("confirms/00000007-{}-somekid.jws", hash.h16());
+        let view = decode_record(bytes, &confirm, None);
+        assert_eq!(
+            view.hash_matches_name, None,
+            "not a claim about these bytes"
+        );
+        let link = format!("links/00000007-{}.jws", hash.h16());
+        let view = decode_record(bytes, &link, None);
         assert_eq!(view.hash_matches_name, Some(true));
-        assert!(view.error.is_some());
-        assert_eq!(view.hash_matches_etag, None);
     }
 }

@@ -2011,7 +2011,14 @@ keeps its identity in a file, signs up or in as the account's state requires, sw
 `docker-compose.yml` (Postgres, testnet, watchman) are in the repository root. One finding for
 F: the testnet homeserver's record advertises `127.0.0.1` and `localhost`, and the SDK's
 `testnet:<host>` form moves only the relay and bootstrap node, so a containerised watchman
-shares the testnet container's network namespace rather than running beside it.
+shares the testnet container's network namespace rather than running beside it. D and G built,
+unexercised in a browser until F: `apps/list` (sign in with Ring or a testnet identity, lists
+from the `index/` markers, create, invite, join with consent, add / tick / untick / remove by
+any member, archive, close as a decision, event streams plus a timer driving `act()`) and
+`apps/view` (rules read from genesis, every declared folder walked, each file decoded with its
+checks, failures red and attributed anomalies amber on the record they belong to, live until
+final). Both took the Vite fallback rather than Next.js: the SDK's package embeds its wasm
+while ours is a fetched asset, and Vite handles that without configuration.
 
 ### 16.3 SDK changes
 

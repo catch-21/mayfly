@@ -397,6 +397,15 @@ impl ChainClient {
         }
     }
 
+    /// The terms genesis names — parties, rules, watchmen, quorum — once a sync has found the
+    /// genesis link, including before it commits. `undefined` before that.
+    pub fn arrangement(&self) -> Result<JsValue, JsValue> {
+        match self.borrow()?.arrangement() {
+            Some(a) => to_js(&a),
+            None => Ok(JsValue::UNDEFINED),
+        }
+    }
+
     /// The chain as of the last sync, or `undefined` before one.
     pub fn view(&self) -> Result<JsValue, JsValue> {
         let c = self.borrow()?;

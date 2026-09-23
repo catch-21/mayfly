@@ -11,6 +11,12 @@
  * @param {import("@synonymdev/pubky").Pubky} pubky
  * @param {import("@synonymdev/pubky").Session} [session]
  */
+/** A missing file or directory: the homeserver answers 404, which is an empty result. */
+function missing(e) {
+  if (e && e.name === "RequestError" && e.data && e.data.statusCode === 404) return true;
+  return /404/.test(String(e && e.message));
+}
+
 export function storeFromPubky(pubky, session) {
   const pub = pubky.publicStorage;
   const me = session ? session.info.publicKey.z32() : "";
@@ -22,7 +28,13 @@ export function storeFromPubky(pubky, session) {
       let cursor = null;
       for (;;) {
         // list(address, cursor, reverse, limit, shallow) — one page at a time.
-        const page = await pub.list(address, cursor, false, 1000, false);
+        let page;
+        try {
+          page = await pub.list(address, cursor, false, 1000, false);
+        } catch (e) {
+          if (missing(e)) return out;
+          throw e;
+        }
         for (const link of page) {
           const path = link.replace(/^pubky:\/\/[^/]+/, "");
           out.push({ path });
@@ -50,8 +62,7 @@ export function storeFromPubky(pubky, session) {
       try {
         return await pub.getBytes(`pubky://${owner}${path}`);
       } catch (e) {
-        if (e && (e.name === "RequestError") && e.data && e.data.statusCode === 404) return undefined;
-        if (/404/.test(String(e && e.message))) return undefined;
+        if (missing(e)) return undefined;
         throw e;
       }
     },
@@ -74,12 +85,16 @@ export function storeFromPubky(pubky, session) {
 export async function signerFromSession(session) {
   const grant = session.grant;
   if (!grant) throw new Error("Mayfly needs a grant-backed session (not a cookie session)");
-  const client = await grant.clientPublicKey();
+  const [client, info, grantJws] = await Promise.all([
+    grant.clientPublicKey(),
+    grant.sessionInfo(),
+    grant.grantJws(),
+  ]);
   return {
     pubky: session.info.publicKey.z32(),
     kid: client.z32(),
-    clientId: session.info.clientId,
-    grantJws: await grant.grantJws(),
+    clientId: info.clientId,
+    grantJws,
     signJws: (typ, claims) => grant.signJws(typ, claims),
   };
 }

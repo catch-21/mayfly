@@ -1,0 +1,30 @@
+{
+  "name": "@synonymdev/mayfly-view",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only Mayfly chain viewer: follows a chain from a pubky:// link and shows every record with its checks.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:testnet": "VITE_TESTNET=true vite build --base /testnet/ --outDir dist/testnet",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@synonymdev/mayfly": "file:../../crates/wasm",
+    "@synonymdev/pubky": "file:../../../pubky-sdk/bindings/js/pkg",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

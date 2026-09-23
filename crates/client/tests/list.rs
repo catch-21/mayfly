@@ -124,7 +124,15 @@ async fn a_shared_list_runs_on_act_alone() {
     let all = [0, 1, 2];
     settle(&mut clients, &all, &clock, 1).await;
     for c in &clients {
-        assert_eq!(c.verdict().unwrap().status, Status::Ongoing);
+        let v = c.verdict().unwrap();
+        assert_eq!(v.status, Status::Ongoing);
+        assert!(
+            v.anomalies
+                .iter()
+                .all(|a| a.kind != pubky_mayfly::fold::AnomalyKind::Equivocation),
+            "joining must not vote twice: {:?}",
+            v.anomalies
+        );
         assert_eq!(items(c), Vec::<String>::new());
     }
 

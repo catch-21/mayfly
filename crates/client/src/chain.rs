@@ -414,6 +414,21 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         &self.store
     }
 
+    /// The terms named in genesis, once a sync has found the genesis link.
+    ///
+    /// Available before genesis commits: a chain of more than one party is not committed
+    /// until the others confirm it, and an app still has to show those terms so the others
+    /// can decide to join (§8.1).
+    pub fn arrangement(&self) -> Option<crate::view::Arrangement> {
+        let (_, g) = self.genesis.as_ref()?;
+        Some(crate::view::Arrangement {
+            rules: g.rules.clone(),
+            parties: g.parties.iter().map(|p| p.pubky.clone()).collect(),
+            witnesses: g.witnesses.iter().map(|w| w.pubky.clone()).collect(),
+            confirm_quorum: g.confirm_quorum,
+        })
+    }
+
     /// The last verdict, if any sync has succeeded.
     pub fn verdict(&self) -> Option<&Verdict> {
         self.verdict.as_ref()
@@ -1270,6 +1285,11 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
                     out.push(Action::Skipped(h));
                 }
             }
+            // Genesis is confirmed by `join`, which embeds the Grant and folder (§8.1).
+            // Confirming it here as ordinary rules content writes a second vote.
+            // Matched on the wire string: `Kind::parse` maps every unknown kind, including
+            // "genesis", to `Kind::Rules`, so the arm below would confirm it.
+            Some(c) if c.kind == "genesis" => {}
             Some(c) if Kind::parse(&c.kind) == Kind::Rules => match self.confirm(c.hash).await {
                 Ok(_) => out.push(Action::Confirmed(c.hash)),
                 Err(Error::AwaitingWitnesses { have, of, want }) => {

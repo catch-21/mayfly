@@ -221,6 +221,21 @@ npm test          # the shared-list flow of crates/client/tests/list.rs, through
 
 `crates/wasm/README.md` shows the API. The npm name is provisional.
 
+## The web apps
+
+```
+apps/list   the shared shopping list, for its members: sign in with Pubky Ring, create, invite,
+            join, add / tick / untick / remove, archive, close
+apps/view   the chain viewer, for anyone: paste a chain or record link, follow it live or read
+            it finished, every link decoded, every verification failure on the record it belongs to
+```
+
+Both are Vite + React static sites over `crates/wasm` and the SDK's JS package, with a
+`/testnet/` flavour (`npm run build:testnet`) for the local testnet. Each has its own README.
+They take the SDK from `../pubky-sdk/bindings/js/pkg` (run its `npm run build` first) and the
+module from `crates/wasm` (`npm run build` there) as `file:` dependencies until both are
+published.
+
 ## Building on Mayfly
 
 `docs/skills/mayfly-app/SKILL.md` is the guide to writing an app or a rules module, for people
