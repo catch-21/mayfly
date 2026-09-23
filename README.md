@@ -1,5 +1,9 @@
 # Mayfly
 
+<p align="center">
+  <img src="docs/mayfly-logo.png" alt="Mayfly" width="360">
+</p>
+
 A verifiable chain among a small set of parties, on Pubky. Every append is a signed,
 hash-linked record on the author's own homeserver, committed by a quorum of the other parties'
 confirmations within a voting round, and replayable by anyone from files alone. An optional
