@@ -20,6 +20,7 @@ fn kind(e: &Error) -> &'static str {
         Error::RoundDead => "RoundDead",
         Error::AwaitingWitnesses { .. } => "AwaitingWitnesses",
         Error::State(_) => "State",
+        Error::Oversize { .. } => "Oversize",
     }
 }
 

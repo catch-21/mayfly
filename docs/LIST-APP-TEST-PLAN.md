@@ -170,8 +170,7 @@ Use the chain from B after B9, and the chain from E after E4.
 
 ## I. After the fixes
 
-Not part of the first session. Each of these is `unchecked` in the session log. Run them once
-the failures above are addressed. They are the boundaries the first session touched only by
+Not part of the first session. Results are in the session log. These are the boundaries the first session touched only by
 accident, or did not touch, including what the viewer shows for a chain that is finished and
 for one that is only part-way there. I7, I22 and I23 are the dispute cases: refusing an
 agreed close, a watchman receipting that refusal, and a minority witness clock. Refusing a
@@ -219,6 +218,8 @@ Member A before A8: `3mak4zm1h5f8kzbbqmh5zjdsk6m1qg631xbbt67zgpbgesdcoiry`.
 Member A for B onwards: `ohxc9q6kgnrfyw1nhfb5so1mygbjssrqzfeyimxtohwms999foso`.
 Member B: `pka7amqf48jnuoootdyuthxapynr7f8pm415x16psd6ejc13ua6y`.
 Stranger, and member C for later sections: `6dg5mnoi8du4ibxar7wqm8fnthoqz9hsrggxxbtyrpyggtj8ru7o`.
+
+Section I, 23 Sep, separate Chrome profiles. Most cases used A `mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o`, B `upzohkneyro6xcqmijgfudchjn66nw56nhxybxtfu6c7gd3qj6ey`, C `w7wjy489sscg39yepseo6pg15s5xb7qr5cnb5yj1nth6i4q3zbho`. I1, I8–I11, I19 and I20 used A `a7um7sm9ocf3df9k3uzsgikwfdr943uck9ohjmon4krng9ozr1qy`, B `8gzgrc8yk1dbofb59tsq7sdwsubrngtk5xn7rst78y5nhysifjjo`, C `gfkjn1biase1ykp3hk8ycc854rhaw1obdb69owinzgeg7kptyqby`. I13 recreated the watchman with `MAYFLY_WATCHMAN_FREE` set to the mbdzut trio, so that credit list is what `/status` has now.
 
 | Id | Result | Notes |
 | --- | --- | --- |
@@ -277,28 +278,28 @@ Stranger, and member C for later sections: `6dg5mnoi8du4ibxar7wqm8fnthoqz9hsrggx
 | H4 | pass | Tea was added and confirmed. The viewer checklist showed it without a manual refresh. |
 | H5 | pass | Closed chain from C5: status final, polling stopped, and refresh did not start it again. The Obstruction row from C4 is still on that page. |
 | H6 | pass | `pubky://aaaa/not-a-chain` showed `is not a chain URL`. The page was not blank. |
-| I1 | unchecked | |
-| I2 | unchecked | |
-| I3 | unchecked | |
-| I4 | unchecked | |
-| I5 | unchecked | |
-| I6 | unchecked | |
-| I7 | unchecked | |
-| I8 | unchecked | |
-| I9 | unchecked | |
-| I10 | unchecked | |
-| I11 | unchecked | |
-| I12 | unchecked | |
-| I13 | unchecked | |
-| I14 | unchecked | |
-| I15 | unchecked | |
-| I16 | unchecked | |
-| I17 | unchecked | |
-| I18 | unchecked | |
-| I19 | unchecked | Viewer, chain not yet joined by everyone. |
-| I20 | unchecked | Viewer, one change confirmed and another still open. |
-| I21 | unchecked | Viewer, chain closed by agreement. |
-| I22 | unchecked | Watchman receipts a refused close. |
+| I1 | pass | Own pubky plus one other. The waiting screen showed self once and one member not joined. `pubky://a7um7sm9ocf3df9k3uzsgikwfdr943uck9ohjmon4krng9ozr1qy/pub/list.mayfly.example/mayfly/chains/X9Z8RXS33Q6SJGAF9WG69YVZVM/`. |
+| I2 | pass | The same pubky typed twice was treated as one member and a list was written. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/AN14JGBW8N825M0JB4HMT6NFPM/`. Recheck 24 Sep, first: still written (`…/chains/ENJ4S5WB609E06H11SW2FQCHRW/`). Recheck after the refusal: refused, no list written. |
+| I3 | pass | Spaces and a trailing comma were one member. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/BG2XSY9EG033DVD9JAWYM647WG/`. |
+| I4 | pass | A and C updated without a reload when B joined. Viewer had three seats. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/P2JEQWWJKE1Q14775W964GM6CW/`. |
+| I5 | pass | Bread confirmed. The form stayed usable. No settling error. |
+| I6 | pass | Home listed `1Y3V2…9VC04` once, marked finished. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/1Y3V27V3CZY5Z4HDF8N3Q9VC04/`. |
+| I7 | pass | After Refuse, the close stayed pending at 1/2 and Pears did not confirm. No Obstruction line. Listed on A's home as `18X89…VPJ0R`. Recheck 24 Sep, first: the 1/2 line was gone but Pears still did not confirm (`…/chains/HNW47D5QQFMQQRY0XN2JGMMAM0/`). Recheck after the follow-up: Pears confirmed, no Obstruction, not final. `pubky://ar16g8ikcqbfnht7awarjxicfz61zuqmmwhait1y4ndor31w7czy/pub/list.mayfly.example/mayfly/chains/JQPMHY8JJECX0HR7MAKE2AX5DG/`. Recheck after the review changes (the close is offered again as a card unless an add is waiting): Pears confirmed in 0.4s, no Obstruction, not final. `pubky://pp75egyk3n4ndi3zpyxwgwsz1c344trzwm4ipgbu53dra45c7kco/pub/list.mayfly.example/mayfly/chains/A6P21EG84Y5DCZA024F75EWJ0G/`. |
+| I8 | pass | Edit kept id `1cb8874c04e8`, first place, still ticked. Viewer showed that id. `pubky://a7um7sm9ocf3df9k3uzsgikwfdr943uck9ohjmon4krng9ozr1qy/pub/list.mayfly.example/mayfly/chains/XH0PTHS2T3T1M34D6EFMARWXGR/`. |
+| I9 | pass | Two unticked Milk rows, both confirmed, on both apps. `pubky://a7um7sm9ocf3df9k3uzsgikwfdr943uck9ohjmon4krng9ozr1qy/pub/list.mayfly.example/mayfly/chains/497GTT07Q33YKBBBBFDHCDM05C/`. |
+| I10 | pass | `Café, 2×` on both apps and the viewer. Same chain as I8. |
+| I11 | pass | An item of 70,000 Zs was added. The page showed no error and no anomaly. Same chain as I8. Recheck 24 Sep: refused, `record is 94605 bytes; this chain allows 65536`. Kept stayed. No anomaly. `pubky://kgg5f8653tdgbc38w67b5r94tyahzmogmrerhp1s71r64xzbz9hy/pub/list.mayfly.example/mayfly/chains/8NGKHQYHZFYT5SZCZR6Z7MQ80C/`. |
+| I12 | pass | Watchman credit included both members, field left empty. Not in `/status` watching, no watchman line, no anomaly. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/R4359D4HDGKBD807GF2ZANYZHR/`. |
+| I13 | pass | New chain naming the watchman while these members had no credit (the F chain was already engaged). After `MAYFLY_WATCHMAN_FREE` was set and the watchman recreated, the sweep engaged `R6HSX9PJ3T9NCYEHXM1JQKSNEC`, receipts 4, viewer one witness, no anomaly. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/R6HSX9PJ3T9NCYEHXM1JQKSNEC/`. |
+| I14 | pass | First: blocked, the refused close on the I22 chain never cleared. 24 Sep: watchman restarted on a watched chain, then B added Plums. `/status` pubky unchanged (the Grant `kid` rotated, as expected on sign-in). Receipts with signature ok went from 6 to 14, none failed, no red row, no anomaly on either app. `pubky://6ggdosqsqox77zab3yna9qmspcdp74f34pn7tw7gycpuy1o36zry/pub/list.mayfly.example/mayfly/chains/3FJQMXCDRFJWNGEBQRZGSSBAJM/`. |
+| I15 | pass | After a minute in a background tab the page was not stuck on Creating. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/F9RGKVW94EAAKA8QY52A8EC5P8/`. |
+| I16 | pass | Both lists showed Figs. The close did not remain. Not final. No Obstruction. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/JJ8AE70HZ5S13WA651H9RCZAGC/`. |
+| I17 | pass | The list was empty in between, the add box stayed, and Next confirmed. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/J4JX24DF2G76YMTNA40X9N1EXM/`. |
+| I18 | pass | Both apps archived. Late was absent. No anomaly. `pubky://mbdzutp7gj3nztx39sdmz471smdhzm95kodwafqio3k89ygaws7o/pub/list.mayfly.example/mayfly/chains/X21KDKKPB4VS5QXPC24EC2SM0R/`. |
+| I19 | pass | Viewer, chain not yet joined by everyone. Live, not final, genesis listed, B not a seat, no red row. Same chain as I1. |
+| I20 | pass | Viewer, one change confirmed and another still open. Checklist was Bread only. Honey appeared 2.8s after A returned, without a manual refresh. `pubky://a7um7sm9ocf3df9k3uzsgikwfdr943uck9ohjmon4krng9ozr1qy/pub/list.mayfly.example/mayfly/chains/CVYQCZ3EAWE97EGT50DSAV3JJC/`. |
+| I21 | pass | Viewer, chain closed by agreement. Final, polling stayed stopped after refresh, checklist matched, no anomaly. Same chain as I6. |
+| I22 | pass | Watchman receipts a refused close. After Refuse the close stayed at 1/2 (witnessed 1/1) and the next item did not confirm. No Obstruction line. Listed on A's home as `C67GD…33Y94`. Recheck 24 Sep, first: refusal receipted, Pears did not confirm (`…/chains/0QVN1099XBQYXN7EDKMT48RB38/`). Recheck after the follow-up: Pears confirmed, no Obstruction, not final, errors 0, viewer shows the reject and a signature ok. `pubky://ar16g8ikcqbfnht7awarjxicfz61zuqmmwhait1y4ndor31w7czy/pub/list.mayfly.example/mayfly/chains/NZGD58GZ2NXYWVJ7J38MRT3GS8/`. Recheck after the review changes: one run showed the next round falling to B, whose own add went first and A's Pears waited (`…/chains/3FJQMXCDRFJWNGEBQRZGSSBAJM/`); the add is now held and sent on the next tick. Re-run: Pears confirmed in 0.4s, receipts 8, errors 0, reject listed with signature ok, no Obstruction, not final. `pubky://pp75egyk3n4ndi3zpyxwgwsz1c344trzwm4ipgbu53dra45c7kco/pub/list.mayfly.example/mayfly/chains/7GQEMJFYG211BQGAPA276MAH18/`. |
 | I23 | pass | `a_minority_witness_clock_does_not_decide_a_grant_window`: one clock two days ahead leaves the link committed, with no GrantWindow. All three clocks agreeing places it outside the window. |
 
 ## Failures

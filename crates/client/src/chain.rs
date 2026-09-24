@@ -733,6 +733,20 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
 
     // ── Writing records ─────────────────────────────────────────────────────────────────────
 
+    /// Refuse a chain record larger than genesis `max_body_bytes` (§6.6) before it is written.
+    fn enforce_limit(&self, bytes: &[u8]) -> Result<(), Error> {
+        let Some((_, genesis)) = &self.genesis else {
+            return Ok(());
+        };
+        if bytes.len() as u64 > genesis.max_body_bytes {
+            return Err(Error::Oversize {
+                len: bytes.len(),
+                max: genesis.max_body_bytes,
+            });
+        }
+        Ok(())
+    }
+
     async fn put_mine(&mut self, file: String, bytes: Vec<u8>) -> Result<Hash, Error> {
         let hash = Hash::of(&bytes);
         self.store.put(&file, bytes.clone()).await?;
@@ -771,6 +785,7 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             commit,
         };
         let bytes = sign_record(&self.signer, typ::CONFIRM, &c).await?;
+        self.enforce_limit(&bytes)?;
         let file = self.my_folder().chain(&self.chain).confirm(0, &g_link.hash);
         let hash = self.put_mine(file, bytes).await?;
         self.mark_active().await?;
@@ -874,6 +889,7 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         } else {
             sign_record(&self.signer, typ::LINK, &link).await?
         };
+        self.enforce_limit(&bytes)?;
         let hash = Hash::of(&bytes);
         let file = self.my_folder().chain(&self.chain).link(link.seq, &hash);
         self.put_mine(file, bytes).await
@@ -896,6 +912,10 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
 
     /// Propose rules content of `kind` at the open seq (§8.2).
     pub async fn propose(&mut self, kind: &str, body: Value) -> Result<Hash, Error> {
+        // The view may still show a round this party has already voted in. Sync first so a
+        // dead round is seen and the proposal lands in the next one. One read per user
+        // proposal; `act()` calls this only after its own sync, so the second read is cheap.
+        self.sync().await?;
         let (_, open) = self.open_view()?;
         let round = Self::current_round(open);
         let me = self.guard_proposer(open, round)?;
@@ -958,8 +978,8 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             open.candidates
                 .iter()
                 .filter(|c| c.round == r && c.votes > 0)
+                .min_by_key(|c| c.hash)
                 .map(|c| c.hash)
-                .min()
         }))
     }
 
@@ -1041,6 +1061,7 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         };
         let seq = open.seq;
         let bytes = sign_record(&self.signer, typ::CONFIRM, &c).await?;
+        self.enforce_limit(&bytes)?;
         let file = self.my_folder().chain(&self.chain).confirm(seq, &close);
         self.put_mine(file, bytes).await
     }
@@ -1141,6 +1162,7 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
         };
         let seq = open.seq;
         let bytes = sign_record(&self.signer, typ::CONFIRM, &c).await?;
+        self.enforce_limit(&bytes)?;
         let file = self.my_folder().chain(&self.chain).confirm(seq, &link);
         self.put_mine(file, bytes).await
     }
@@ -1157,6 +1179,7 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             ts: self.ts(),
         };
         let bytes = sign_record(&self.signer, typ::REJECT, &r).await?;
+        self.enforce_limit(&bytes)?;
         let file = self.my_folder().chain(&self.chain).reject(seq, round);
         self.put_mine(file, bytes).await
     }
@@ -1257,6 +1280,13 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
                                 let link = self.repropose(earlier).await?;
                                 out.push(Action::Reproposed { earlier, link });
                             }
+                            // A protocol kind that died — a close, a recover — is the
+                            // proposer's to put forward again or let go (§6.4). That holds
+                            // for a refused agreed close too: consent was withheld (§6.8),
+                            // and asking again is a choice the person makes, not the client.
+                            // The app answers with `repropose`, `pass`, or a proposal of its
+                            // own in this round; an unanswered card blocks nothing but the
+                            // proposer's own turn.
                             Some(c) => out.push(Action::Decision {
                                 candidate: c,
                                 round,

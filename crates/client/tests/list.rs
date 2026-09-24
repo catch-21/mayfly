@@ -267,3 +267,49 @@ async fn a_shared_list_runs_on_act_alone() {
 async fn everyone_is_done(c: &Client) -> bool {
     c.verdict().unwrap().open.is_none()
 }
+
+/// §6.6: the client refuses to write a record over genesis `max_body_bytes`, so the list
+/// is unchanged and the other member never sees it.
+#[tokio::test]
+async fn an_oversized_item_is_refused_before_it_is_written() {
+    let shared = MemoryStore::shared();
+    let clock = Clock(Arc::new(AtomicU64::new(NOW_S * 1000)));
+    let parties = [
+        party(&shared, "list.example"),
+        party(&shared, "list.example"),
+    ];
+    let pubkies: Vec<String> = parties.iter().map(|(s, _)| s.pubky()).collect();
+    let spec = GenesisSpec::new(pubkies).with_apps(&["list.example", "list.example"]);
+    let alice = ChainClient::create(List, parties[0].1.clone(), parties[0].0.clone(), spec)
+        .await
+        .unwrap()
+        .with_clock(clock.reader());
+    let invite = alice.invite_url();
+    let mut bob = ChainClient::open_url(List, parties[1].1.clone(), parties[1].0.clone(), &invite)
+        .unwrap()
+        .with_clock(clock.reader());
+    bob.sync().await.unwrap();
+    bob.join().await.unwrap();
+    let mut clients = vec![alice, bob];
+    settle(&mut clients, &[0, 1], &clock, 1).await;
+
+    let err = clients[0]
+        .propose_body(&Body::Add {
+            id: "too-big".into(),
+            text: "Z".repeat(70_000),
+            qty: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            pubky_mayfly_client::Error::Oversize { max: 65_536, .. }
+        ),
+        "{err}"
+    );
+    assert!(items(&clients[0]).is_empty());
+    clients[1].sync().await.unwrap();
+    assert_eq!(clients[1].verdict().unwrap().committed.len(), 1);
+    assert!(items(&clients[1]).is_empty());
+}

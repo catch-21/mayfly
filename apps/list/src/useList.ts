@@ -74,6 +74,8 @@ export interface ListHandle {
   error: string | undefined;
   decisions: Decision[];
   lastActions: ActionView[];
+  /** An add typed while it was not my turn; proposed on the next tick that allows it. */
+  waiting: string | undefined;
   join(): Promise<void>;
   add(text: string): Promise<void>;
   edit(id: string, text: string): Promise<void>;
@@ -118,6 +120,8 @@ export function useList(session: Session, url: string): ListHandle {
   const pieces = useRef<{ store: Store; signer: Signer }>();
   const inFlight = useRef(false);
   const alive = useRef(true);
+  const queued = useRef<{ kind: string; id: string; text?: string } | null>(null);
+  const [waiting, setWaiting] = useState<string>();
   const me = session.info.publicKey.z32();
 
   /** act(), then publish the view; one at a time, never throwing. */
@@ -129,20 +133,42 @@ export function useList(session: Session, url: string): ListHandle {
       const actions = (await c.act()) as ActionView[];
       if (!alive.current) return;
       setLastActions(actions);
-      const asks = actions.filter((a): a is ActionView & { kind: "decision" } => a.kind === "decision");
-      if (asks.length) {
-        setDecisions((prev) => {
-          const known = new Set(prev.map((d) => d.candidate.candidate.hash));
-          const fresh = asks.filter((a) => !known.has(a.candidate.hash)).map((a) => ({ candidate: a, seenAt: Date.now() }));
-          return fresh.length ? [...prev, ...fresh] : prev;
-        });
-      }
-      // A round of mine with nothing to carry forward: pass, so the others can proceed (§6.4).
-      if (actions.some((a) => a.kind === "my_turn")) {
+      // An add that could not go out when it was typed (my proposal had just been refused, or
+      // the round was another member's) is tried again on every tick until it is proposed. In
+      // my own round it also answers a "put it forward again, or let it go" question about my
+      // dead proposal: a new proposal is the third answer, so that card is not shown. A
+      // transient error means "not my turn yet" and the add keeps waiting.
+      const held = queued.current;
+      let proposed = false;
+      if (held) {
         try {
-          await c.pass();
+          await c.proposeBody(held);
+          queued.current = null;
+          proposed = true;
         } catch (e) {
-          if (!transient(e)) throw e;
+          if (!transient(e)) {
+            queued.current = null;
+            throw e;
+          }
+        }
+      }
+      setWaiting(queued.current?.text);
+      if (!proposed) {
+        const asks = actions.filter((a): a is ActionView & { kind: "decision" } => a.kind === "decision");
+        if (asks.length) {
+          setDecisions((prev) => {
+            const known = new Set(prev.map((d) => d.candidate.candidate.hash));
+            const fresh = asks.filter((a) => !known.has(a.candidate.hash)).map((a) => ({ candidate: a, seenAt: Date.now() }));
+            return fresh.length ? [...prev, ...fresh] : prev;
+          });
+        }
+        // A round of mine with nothing to carry forward: pass, so the others can proceed (§6.4).
+        if (actions.some((a) => a.kind === "my_turn")) {
+          try {
+            await c.pass();
+          } catch (e) {
+            if (!transient(e)) throw e;
+          }
         }
       }
       const v = c.view() as ChainView | undefined;
@@ -157,7 +183,11 @@ export function useList(session: Session, url: string): ListHandle {
           if (!open) return false;
           const k = d.candidate.candidate;
           const mine = v?.parties.indexOf(me) ?? -1;
-          const voted = open.voters.some(([round, who]) => round === open.round && who.includes(mine));
+          // `open.round` is the dead round once it has died. A re-proposal is a question
+          // about the next round, so a vote already cast in the dead round must not hide it.
+          const voted = open.voters.some(
+            ([round, who]) => round === d.candidate.round && who.includes(mine),
+          );
           if (voted) return false;
           const live = open.candidates.some((c) => c.hash === k.hash);
           // A re-proposal question is about a candidate from the dead round; an ordinary one
@@ -179,6 +209,9 @@ export function useList(session: Session, url: string): ListHandle {
     setView(undefined);
     setError(undefined);
     setDecisions([]);
+    // An add typed on the previous list must not be proposed on this one.
+    queued.current = null;
+    setWaiting(undefined);
     client.current = undefined;
     (async () => {
       try {
@@ -297,8 +330,28 @@ export function useList(session: Session, url: string): ListHandle {
     error,
     decisions,
     lastActions,
+    waiting,
     join: () => run((c) => c.join()),
-    add: (text) => run((c) => c.proposeBody({ kind: "add", id: itemId(), text })),
+    add: (text) => {
+      // Hold the add until it is proposed. If the chain is between rounds, or the round is
+      // another member's, this is not an error to the person typing: act() sends it when it
+      // can and the row shows as waiting until then.
+      const body = { kind: "add", id: itemId(), text };
+      queued.current = body;
+      setWaiting(text);
+      return run(async (c) => {
+        try {
+          await c.proposeBody(body);
+          if (queued.current === body) queued.current = null;
+          setWaiting(queued.current?.text);
+        } catch (e) {
+          if (transient(e)) return;
+          queued.current = null;
+          setWaiting(undefined);
+          throw e;
+        }
+      });
+    },
     edit: (id, text) => run((c) => c.proposeBody({ kind: "edit", id, text })),
     tick: (id, on) => run((c) => c.proposeBody({ kind: on ? "tick" : "untick", id })),
     remove: (id) => run((c) => c.proposeBody({ kind: "remove", id })),

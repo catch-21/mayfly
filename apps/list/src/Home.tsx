@@ -7,14 +7,16 @@ import { createList, myLists } from "./useList";
 
 /**
  * The other members, from the textarea: split on whitespace and commas, drop the creator's
- * own pubky and repeats, and refuse anything that is not a pubky before a chain is written.
+ * own pubky, and refuse a repeated pubky or anything that is not a pubky before a chain is
+ * written.
  */
 export function parseMembers(raw: string, me: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const piece of raw.split(/[\s,]+/)) {
     const p = piece.trim();
-    if (!p || p === me || seen.has(p)) continue;
+    if (!p || p === me) continue;
+    if (seen.has(p)) throw new Error(`"${p}" is listed more than once`);
     try {
       PublicKey.from(p);
     } catch {

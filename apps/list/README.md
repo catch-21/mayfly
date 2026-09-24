@@ -45,8 +45,10 @@ branch only.
   member's agreement, which arrives as a decision card in their app. Refusing a close is
   consent withheld, not obstruction: the list carries on.
 - A round that dies without confirming a proposal puts a question to the next designated
-  proposer: put it forward again, or let it go. A user action that gets no answer from the
-  homeserver in twenty seconds releases the form and says so.
+  proposer: put it forward again, or let it go. If that proposer has already typed a new item,
+  the item is proposed instead and the question is not shown; a new proposal is the third
+  answer. A user action that gets no answer from the homeserver in twenty seconds releases the
+  form and says so.
 - Anything the verifier attributes to a member — a tampered mirror, an equivocation — is
   listed at the bottom, with the viewer for the evidence.
 

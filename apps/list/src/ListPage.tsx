@@ -119,7 +119,11 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
   }
 
   const items = v.state?.items ?? [];
-  const pending = (v.open?.candidates ?? []).filter((k) => k.round === v.open?.round);
+  // A dead round's candidates have already been voted on. Showing them as pending makes a
+  // refused close look still open, and hides that the next round has started.
+  const pending = (v.open?.candidates ?? []).filter(
+    (k) => k.round === v.open?.round && !v.open?.dead,
+  );
   const closed = v.is_final || v.state?.archived;
   const waiting = v.status.kind === "stalled" ? v.status.parties : [];
   // A proposal nobody has confirmed yet is what the pending rows already show; the verifier
@@ -226,7 +230,17 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
               </span>
             </li>
           ))}
-          {items.length === 0 && pending.length === 0 && <li className="dim">Nothing on the list yet.</li>}
+          {list.waiting && (
+            <li className="pending">
+              <span className="dot" />
+              <span>
+                you: <b>add</b> {list.waiting} · waiting for your turn
+              </span>
+            </li>
+          )}
+          {items.length === 0 && pending.length === 0 && !list.waiting && (
+            <li className="dim">Nothing on the list yet.</li>
+          )}
         </ul>
         {!closed && (
           <form className="row" onSubmit={submit}>

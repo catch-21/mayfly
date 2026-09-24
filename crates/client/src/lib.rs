@@ -94,4 +94,12 @@ pub enum Error {
     /// The action is not allowed in this state (message says why).
     #[error("{0}")]
     State(String),
+    /// The signed record is larger than the chain's `max_body_bytes` (§6.6).
+    #[error("record is {len} bytes; this chain allows {max}")]
+    Oversize {
+        /// The record's length.
+        len: usize,
+        /// Genesis `max_body_bytes`.
+        max: u64,
+    },
 }

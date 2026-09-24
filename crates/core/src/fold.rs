@@ -574,21 +574,6 @@ impl<'a, R: Rules> Fold<'a, R> {
         let revocations: Vec<Signed<Revocation>> =
             decode_all(&inputs.revocations, typ::REVOKE, cap, &mut seen);
 
-        // One party's mirrored links alone prove every committed link except the head (§9.1):
-        // the confirmations and receipts embedded in links join the pools.
-        let mut embedded_c = Vec::new();
-        let mut embedded_r = Vec::new();
-        for l in &links {
-            for c in &l.payload.confirms {
-                embedded_c.push(c.as_bytes().to_vec());
-            }
-            for r in &l.payload.receipts {
-                embedded_r.push(r.as_bytes().to_vec());
-            }
-        }
-        confirms.extend(decode_all(&embedded_c, typ::CONFIRM, cap, &mut seen));
-        receipts.extend(decode_all(&embedded_r, typ::WITNESS, cap, &mut seen));
-
         // 1. Genesis.
         let mut anomalies = Vec::new();
         let mut geneses: Vec<(Signed<Link>, Genesis, String)> = Vec::new();
@@ -640,13 +625,44 @@ impl<'a, R: Rules> Fold<'a, R> {
         });
         key_cache.insert(initiator_kid.clone(), parse_z32(&initiator_kid)?);
 
-        // Keep only this chain's records. Genesis links other than ours are dropped.
-        links.retain(|l| l.payload.chain == chain || l.hash == genesis_link.hash);
-        confirms.retain(|c| c.payload.chain == chain);
+        // Keep only this chain's records, and only those within `max_body_bytes` (§6, §6.6).
+        // The decode cap above is what this verifier will fetch; the chain's own limit is
+        // stricter, and a record over it is invalid before it is parsed into a candidate or
+        // a vote. Genesis links other than ours are dropped.
+        let limit = genesis.max_body_bytes;
+        let fits = |n: usize| n as u64 <= limit;
+        links.retain(|l| {
+            (l.payload.chain == chain || l.hash == genesis_link.hash) && fits(l.bytes.len())
+        });
+        confirms.retain(|c| c.payload.chain == chain && fits(c.bytes.len()));
+        receipts.retain(|r| fits(r.bytes.len()));
+        let engagements: Vec<_> = engagements
+            .into_iter()
+            .filter(|e| fits(e.bytes.len()))
+            .collect();
+        let revocations: Vec<_> = revocations
+            .into_iter()
+            .filter(|r| fits(r.bytes.len()))
+            .collect();
         let rejects: Vec<_> = rejects
             .into_iter()
-            .filter(|r| r.payload.chain == chain)
+            .filter(|r| r.payload.chain == chain && fits(r.bytes.len()))
             .collect();
+
+        // One party's mirrored links alone prove every committed link except the head (§9.1):
+        // the confirmations and receipts embedded in links that survived the cap join the pools.
+        let mut embedded_c = Vec::new();
+        let mut embedded_r = Vec::new();
+        for l in &links {
+            for c in &l.payload.confirms {
+                embedded_c.push(c.as_bytes().to_vec());
+            }
+            for r in &l.payload.receipts {
+                embedded_r.push(r.as_bytes().to_vec());
+            }
+        }
+        confirms.extend(decode_all(&embedded_c, typ::CONFIRM, limit, &mut seen));
+        receipts.extend(decode_all(&embedded_r, typ::WITNESS, limit, &mut seen));
 
         // 2. Per-source, per-(seq, round), per-signer bound. Mirrors count against their
         //    signer, so a folder holding a whole QC is normal.

@@ -924,6 +924,46 @@ fn refusing_an_agreed_close_is_not_obstruction() {
     assert!(!v.is_final(), "a refused close leaves the chain open");
 }
 
+/// §6 / §6.6: a record larger than genesis `max_body_bytes` is invalid before it is a
+/// candidate. `archive` ignores its body, so this link would commit if only the rules were
+/// consulted.
+#[test]
+fn a_record_over_max_body_bytes_is_not_a_candidate() {
+    let mut sim = Sim::new(Tally, 2, 0, &["chess.example"], 2);
+    sim.bootstrap().unwrap();
+    let before = sim.committed_hashes();
+    let link = sim
+        .propose(
+            0,
+            "archive",
+            serde_json::json!({ "pad": "x".repeat(70_000) }),
+        )
+        .unwrap();
+    sim.confirm(1, link).unwrap();
+    assert!(
+        sim.committed_hashes().len() > before.len(),
+        "the simulator commits; the fold is what applies the cap"
+    );
+    let v = verify(&Tally, &sim.inputs_all(), &config()).unwrap();
+    assert_eq!(
+        v.committed_hashes(),
+        before,
+        "an oversized record does not commit"
+    );
+    assert!(
+        matches!(v.status, Status::Ongoing | Status::Stalled { .. }),
+        "the chain stays open: {:?}",
+        v.status
+    );
+    assert!(
+        v.anomalies
+            .iter()
+            .all(|a| a.kind != AnomalyKind::HostileSource),
+        "{:?}",
+        v.anomalies
+    );
+}
+
 /// §6.3: the agreed-close exemption is only that close. Refusing a `finished` close of the sole
 /// proposal is still obstruction.
 #[test]
