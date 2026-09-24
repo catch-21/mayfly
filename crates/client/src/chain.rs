@@ -38,6 +38,11 @@ pub struct Policy {
     pub poll: Duration,
     /// Most files fetched per sync (a hostile folder cannot make a client read forever).
     pub max_files_per_sync: usize,
+    /// In a round of mine with nothing to propose, carry forward or hold, pass inside
+    /// [`ChainClient::act`] so the others can proceed (§6.4), instead of returning
+    /// [`Action::MyTurn`]. Right for rules where a round of mine is not a move I owe (a
+    /// shared list); wrong where it is (a game), so off by default.
+    pub auto_pass: bool,
 }
 
 impl Default for Policy {
@@ -46,8 +51,36 @@ impl Default for Policy {
             await_witnesses: 0,
             poll: Duration::from_millis(200),
             max_files_per_sync: 10_000,
+            auto_pass: false,
         }
     }
+}
+
+/// Where a party stands with a chain, for a page deciding what to show (§8.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+    /// Genesis has not been read yet.
+    Loading,
+    /// Genesis names parties and I am not one of them.
+    Stranger,
+    /// I am named and have not signed genesis: show the terms, offer [`ChainClient::join`].
+    Invited,
+    /// I have signed; genesis is not committed until everyone has.
+    Waiting,
+    /// Committed and ongoing.
+    Open,
+    /// Final: a close has committed and been sealed by its successor.
+    Ended,
+}
+
+/// One chain a party is on, from the index markers in their folder (§7).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ChainMarker {
+    /// The chain URL the party joined through.
+    pub url: String,
+    /// Whether the marker is under `index/finished/`.
+    pub finished: bool,
 }
 
 /// What a party needs to write genesis (§6.6).
@@ -154,6 +187,15 @@ pub enum Action {
         /// The round.
         round: u32,
     },
+    /// A held proposal ([`ChainClient::hold`]) went out in this round.
+    Proposed(Hash),
+    /// A held proposal was refused for good — by the rules, or as oversize — and dropped.
+    HeldRefused {
+        /// The body, `kind` included.
+        body: Value,
+        /// Why.
+        reason: String,
+    },
     /// Policy (§11.2): holding my vote until the head is witnessed by `want`.
     AwaitingWitnesses {
         /// Receipts held.
@@ -189,6 +231,8 @@ pub struct ChainClient<R: Rules, S: Store, K: Signer> {
     round_seen: Option<(u64, u32, u64)>,
     /// The seq at which I last skipped: one skip per party per seq (§6.3).
     skipped_at: Option<u64>,
+    /// Proposals held until a round takes them (§6.4), in order; `kind` inside each.
+    held: Vec<Value>,
     /// Client policy.
     pub policy: Policy,
     clock: Clock,
@@ -237,6 +281,7 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             pending_signer: None,
             round_seen: None,
             skipped_at: None,
+            held: Vec::new(),
             policy: Policy::default(),
             clock: Box::new(now_ms),
         }
@@ -435,6 +480,75 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
     /// The last verdict, if any sync has succeeded.
     pub fn verdict(&self) -> Option<&Verdict> {
         self.verdict.as_ref()
+    }
+
+    /// The parties as a page should name them: from the committed genesis, or from genesis as
+    /// written before it commits (§8.1). Empty until genesis has been read.
+    pub fn named_parties(&self) -> Vec<String> {
+        match self.arrangement() {
+            Some(a) => a.parties,
+            None => Vec::new(),
+        }
+    }
+
+    /// Where I stand with this chain (§8.1). Genesis of a chain of more than one party is
+    /// not committed until the others confirm it; the creator can already be a seat before
+    /// anyone else joins, so an empty seat list is not the test for `Waiting`.
+    pub fn phase(&self) -> Phase {
+        let parties = self.named_parties();
+        if parties.is_empty() {
+            return Phase::Loading;
+        }
+        let me = self.signer.pubky();
+        if !parties.contains(&me) {
+            return Phase::Stranger;
+        }
+        let Some(v) = self.verdict.as_ref() else {
+            return Phase::Invited;
+        };
+        if !v.seats.iter().any(|s| s.pubky == me) {
+            return Phase::Invited;
+        }
+        if v.committed.is_empty() {
+            return Phase::Waiting;
+        }
+        if v.is_final() {
+            Phase::Ended
+        } else {
+            Phase::Open
+        }
+    }
+
+    /// Everything a page derives from this client between two calls, in one struct.
+    pub fn session_view(&self) -> crate::view::SessionView {
+        let me = self.signer.pubky();
+        let parties = self.named_parties();
+        let my_index = parties.iter().position(|p| *p == me);
+        // A dead round's candidates have already been voted on; showing them as pending
+        // makes a refused close look still open and hides that the next round has started.
+        let pending = self
+            .verdict
+            .as_ref()
+            .and_then(|v| v.open.as_ref())
+            .filter(|open| !open.dead)
+            .map(|open| {
+                open.candidates
+                    .iter()
+                    .filter(|c| c.round == open.round)
+                    .map(crate::view::CandidateView::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        crate::view::SessionView {
+            chain: self.chain.to_string(),
+            url: self.invite_url(),
+            me,
+            phase: self.phase(),
+            parties,
+            my_index,
+            pending,
+            held: self.held.clone(),
+        }
     }
 
     /// My folder.
@@ -899,7 +1013,18 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
     /// field, which becomes the link's `kind`; the rest is its `body`. This is the shape
     /// `#[serde(tag = "kind")]` gives an enum, and what every rules crate here uses.
     pub async fn propose_body(&mut self, body: &R::Body) -> Result<Hash, Error> {
-        let mut value = serde_json::to_value(body).map_err(|e| Error::State(e.to_string()))?;
+        let value = serde_json::to_value(body).map_err(|e| Error::State(e.to_string()))?;
+        self.propose_value(value).await
+    }
+
+    /// [`Self::propose_body`] for a body already serialised, `kind` inside it.
+    pub async fn propose_value(&mut self, body: Value) -> Result<Hash, Error> {
+        let (kind, body) = Self::split_kind(body)?;
+        self.propose(&kind, body).await
+    }
+
+    /// Take `kind` out of a serialised body.
+    fn split_kind(mut value: Value) -> Result<(String, Value), Error> {
         let Some(obj) = value.as_object_mut() else {
             return Err(Error::State("a body serialises to an object".into()));
         };
@@ -907,7 +1032,42 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             Some(Value::String(k)) => k,
             _ => return Err(Error::State("a body carries its `kind`".into())),
         };
-        self.propose(&kind, value).await
+        Ok((kind, value))
+    }
+
+    // ── Held proposals ──────────────────────────────────────────────────────────────────────
+
+    /// Hold rules content until a round takes it. A proposal made while my vote in the round is
+    /// spent, or while the round is another party's, is not wrong, only early (§6.4);
+    /// [`Self::act`] tries the oldest held body on every call and reports
+    /// [`Action::Proposed`] when it goes out, or [`Action::HeldRefused`] when the rules or the
+    /// size limit refuse it for good. A held proposal is also the third answer to a
+    /// [`Action::Decision`] with `repropose`: when it goes out, that question is not asked.
+    pub fn hold(&mut self, body: &R::Body) -> Result<(), Error> {
+        let value = serde_json::to_value(body).map_err(|e| Error::State(e.to_string()))?;
+        self.hold_value(value)
+    }
+
+    /// [`Self::hold`] for a body already serialised, `kind` inside it.
+    pub fn hold_value(&mut self, body: Value) -> Result<(), Error> {
+        Self::split_kind(body.clone())?;
+        self.held.push(body);
+        Ok(())
+    }
+
+    /// The held proposals, oldest first, `kind` inside each.
+    pub fn held(&self) -> &[Value] {
+        &self.held
+    }
+
+    /// Take back the held proposal at `index`, if it has not gone out.
+    pub fn withdraw(&mut self, index: usize) -> Option<Value> {
+        (index < self.held.len()).then(|| self.held.remove(index))
+    }
+
+    /// Drop every held proposal.
+    pub fn clear_held(&mut self) {
+        self.held.clear();
     }
 
     /// Propose rules content of `kind` at the open seq (§8.2).
@@ -1243,6 +1403,55 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
     /// Idempotent: call it whenever anything changes (an event, a poll, a user action). It
     /// never casts a second vote in a round and never skips twice at one seq.
     pub async fn act(&mut self) -> Result<Vec<Action>, Error> {
+        let mut out = self.honest_step().await?;
+
+        // The oldest held proposal, if any, is tried after the honest step: the step may have
+        // moved the round on (a skip, a re-proposal of rules content), and a proposal is a
+        // vote in whatever round is current now. An early refusal keeps it for next time; a
+        // final one drops it and says why. Once it is out, a "put it forward again?" question
+        // or an empty turn in this round has been answered by it.
+        if let Some(body) = self.held.first().cloned() {
+            match self.propose_value(body.clone()).await {
+                Ok(link) => {
+                    self.held.remove(0);
+                    out.retain(|a| {
+                        !matches!(
+                            a,
+                            Action::Decision {
+                                repropose: true,
+                                ..
+                            } | Action::MyTurn { .. }
+                        )
+                    });
+                    out.push(Action::Proposed(link));
+                }
+                Err(e) if e.is_transient() => {}
+                Err(e) => {
+                    self.held.remove(0);
+                    out.push(Action::HeldRefused {
+                        body,
+                        reason: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        // Policy: a round of mine with nothing to do is passed so the others can proceed.
+        if self.policy.auto_pass {
+            if let Some(i) = out.iter().position(|a| matches!(a, Action::MyTurn { .. })) {
+                match self.pass().await {
+                    Ok(h) => out[i] = Action::Passed(h),
+                    Err(e) if e.is_transient() => {}
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Sync, mirror, and the honest choreography of §8.2 for one call, without the held
+    /// queue or the pass policy.
+    async fn honest_step(&mut self) -> Result<Vec<Action>, Error> {
         self.sync().await?;
         self.mirror().await?;
         let Some(open) = self.verdict.as_ref().and_then(|v| v.open.clone()) else {
@@ -1512,6 +1721,30 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             }
         }
     }
+}
+
+/// The chains `store.me()` is on, from the `index/active/` and `index/finished/` markers under
+/// `folder` (a protocol folder, `/pub/<client_id>/mayfly/`; §7). Finished is read first so
+/// that, if an active marker was left behind, the chain is listed once and as finished.
+pub async fn my_chains<S: Store>(store: &S, folder: &str) -> Result<Vec<ChainMarker>, Error> {
+    let folder = crate::layout::Folder::from_path(folder);
+    let me = store.me().to_string();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out = Vec::new();
+    for (sub, finished) in [("index/finished/", true), ("index/active/", false)] {
+        let prefix = format!("{}{sub}", folder.as_str());
+        for entry in store.list(&me, &prefix).await? {
+            let Some(bytes) = store.get(&me, &entry.path).await? else {
+                continue;
+            };
+            let url = String::from_utf8_lossy(&bytes).trim().to_string();
+            if url.is_empty() || !seen.insert(url.clone()) {
+                continue;
+            }
+            out.push(ChainMarker { url, finished });
+        }
+    }
+    Ok(out)
 }
 
 /// Verify a chain from files alone (§9), as anyone: no seat, no signer. Reads from the folder

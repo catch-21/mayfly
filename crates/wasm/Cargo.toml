@@ -19,6 +19,8 @@ pubky-common.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait = "0.1"
+# The async lock every client call takes, so a page's tick and click run one after another.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

@@ -52,7 +52,16 @@ const record = decodeRecord(bytes, path, etag);   // typ, payload, signature_ok,
 The store and signer shapes are in `js/pubky-glue.d.ts`; `js/pubky-glue.js` builds them from an
 SDK `Pubky` and `Session`. `KeyedSigner` is a self-contained signer for Node apps and tests.
 Hashes are unpadded base64url strings; errors are JS `Error`s whose `name` is the client
-error variant (`AlreadyVoted`, `NoSuchCandidate`, `RoundDead`, `Busy`, `InvalidInput`, …).
+error variant (`AlreadyVoted`, `NoSuchCandidate`, `RoundDead`, `Busy`, `InvalidInput`, …),
+with `transient: true` on the ones that mean "not yet".
+
+Async calls on one client are queued and run one at a time. `view()`, `session()`, `state()`
+and `arrangement()` are synchronous and read a snapshot taken after the last call, so a page
+can render at any moment. `session()` is where a member stands (`phase`), whom to name, what
+is pending in the live round, and what is held. `hold(body)` gives the client a proposal to
+put forward inside `act()` when a round takes it. `setPolicy({ autoPass: true })` passes an
+empty round of mine. `new ChainReader(store, resolve).load(url)` reads a chain as anyone;
+`myChains(store, folder)` reads the home index.
 
 ## Your own rules
 

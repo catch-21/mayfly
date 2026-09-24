@@ -22,10 +22,11 @@ npm test          # the shared-list flow, a JavaScript rules module, and error s
 
 ## The browser client: `@synonymdev/mayfly-browser` (`js/browser`)
 
-What a web app drives: sign in with Pubky Ring, the `act()` loop with live updates from the
-other members, decisions put to the person at the right moment, proposals held until the
-round takes them, the home index, and a read-only reader for anyone. React hooks under
-`/react`. Bring your own rules and screens.
+What a web app drives. Thin on purpose: the protocol logic — the `act()` loop, held
+proposals, decisions, where a member stands, the home index, the reader — is the Rust client's
+and reaches the page through the wasm module. This package adds what a browser has: sign in
+with Pubky Ring, event streams from the other members, a timer, a timeout, and what a person
+is told. React hooks under `/react`. Bring your own rules and screens.
 
 ```
 cd js/browser

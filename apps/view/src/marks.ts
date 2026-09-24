@@ -15,7 +15,7 @@ export interface Marks {
 export function marksFor(file: LoadedFile, view: ChainView | null): Marks {
   const failures: string[] = [];
   const r = file.record;
-  if (file.fetchError) failures.push(`could not fetch: ${file.fetchError}`);
+  if (file.fetch_error) failures.push(`could not fetch: ${file.fetch_error}`);
   if (r) {
     if (r.error) failures.push(`not a record: ${r.error}`);
     if (r.signature_ok === false) failures.push("signature does not verify under the claimed key");

@@ -38,8 +38,11 @@ An app never reasons about rounds, votes or files. It does four things:
    timer (the list uses three seconds), and after any user action. `act` syncs, mirrors, and does the honest choreography of §8.2 itself:
    confirms valid rules proposals, re‑proposes rules content after a dead round, skips a
    silent proposer after `think_ms`. A dead protocol kind (close, recover) is returned as
-   `Decision { repropose: true }` for the person to answer. `act` is idempotent and never
-   double‑votes.
+   `Decision { repropose: true }` for the person to answer. Then it tries the oldest
+   proposal given to `hold()` (`Action::Proposed` when it goes out, `Action::HeldRefused`
+   when the rules or the size limit refuse it for good), and, with `policy.auto_pass`, passes
+   an empty round of mine. `act` is idempotent and never double‑votes. `phase()` and
+   `session_view()` say where the party stands and what a page shows between calls.
 3. **Put decisions to the user.** `Action::Decision` is a `close`, `recover` or `witnesses`
    candidate: render it, then `confirm(hash)` or `reject(hash)` (or `repropose`/`pass` if
    `repropose: true`; `confirm_abandoned` for an abandoned close). A proposal of new rules
@@ -109,9 +112,11 @@ The shopping list is the only app in this repository. The next app is its own pr
 depends on `@synonymdev/mayfly-browser` (and, for Rust rules, on a wasm build). Read
 `apps/list` and `apps/view` for the shape. Do not add it under `apps/`.
 
-Use the browser client; do not drive the wasm `ChainClient` from a page yourself. The client
-is where the first web app's mistakes were fixed, and a page that bypasses it makes them
-again. What it gives you (`js/browser/README.md` has the table):
+Use the browser client; do not drive the wasm `ChainClient` from a page yourself. The
+protocol logic — the loop, held proposals, decisions, the phase, the home index, the reader —
+is the Rust client's and reaches the page through the wasm module; the browser package adds
+only what a browser has (sign-in, event streams, a timer, a timeout). What it gives you
+(`js/browser/README.md` has the table):
 
 - **`MayflyApp`**: one app on one network. Ring sign-in as a QR, the testnet shortcut,
   remember/restore/forget, `party(session)` → the store and signer, `readOnlyStore()`.
@@ -139,8 +144,10 @@ not wait. Set `autoPass: false` for rules where a round of yours is a move to ma
 
 ## What the client does for you, and why
 
-These are the rules of the loop the list got wrong first. The client now holds them; read
-them so your screens do not fight it. `js/browser/tests/session.test.mjs` pins each one.
+These are the rules of the loop the list got wrong first. The Rust client now holds them,
+so every binding gets them; read them so your screens do not fight it.
+`crates/client/tests/list.rs` pins each one, and `js/browser/tests/session.test.mjs` pins
+them again through the browser package.
 
 **Genesis is not the chain yet.** With more than one party, genesis stays uncommitted until
 the others `join()`. `state` is `undefined`, `view.parties` is empty, and a proposal is
@@ -160,10 +167,12 @@ the app's purpose is the agreement itself, that card is the feature, so design i
 `MyTurn.round` are the next round. The client matches "has this person voted?" against the
 decision's round, and `pending` lists the live round only; a dead close is not still "1 of 2".
 
-**A proposal the round is not ready for waits.** `AlreadyVoted`, `RoundDead`,
-`NotDesignated`, `Busy` and `AwaitingWitnesses` mean "not yet". A held proposal is retried on
-every tick, whichever member the round belongs to. A user's click waits for the loop rather
-than racing it into `Busy`. The loop never clears an error about the person's own action.
+**A proposal the round is not ready for waits.** `Error::is_transient` names the errors that
+mean "not yet" (`AlreadyVoted`, `RoundDead`, `NotDesignated`, `AwaitingWitnesses`; in
+JavaScript `e.transient`, which also covers `Busy`). `hold()` gives the client a proposal to
+retry inside `act()`, whichever member the round belongs to. The wasm client queues every
+call, so a click during a tick waits rather than failing. The loop never clears an error
+about the person's own action.
 
 **Records over `max_body_bytes` are invalid before parsing** (default 65,536, §6.6). The
 client returns `Oversize` and writes nothing; the fold drops them too. Tell the user how big

@@ -42,7 +42,7 @@ export function RecordPanel({
         </div>
       ))}
       {!r ? (
-        <p className="empty">{file.fetchError ?? "this file is not a .jws record"}</p>
+        <p className="empty">{file.fetch_error ?? "this file is not a .jws record"}</p>
       ) : (
         <>
           <dl className="header-grid">
@@ -55,7 +55,7 @@ export function RecordPanel({
               {r.hash} <span className="dim">h16</span> {r.h16}
             </dd>
             <dt>ETag</dt>
-            <dd className="mono">{file.contentHash ?? <span className="dim">not reported</span>}</dd>
+            <dd className="mono">{file.content_hash ?? <span className="dim">not reported</span>}</dd>
             <dt>checks</dt>
             <dd>
               signature {String(r.signature_ok ?? "n/a")}, bytes=etag {String(r.hash_matches_etag ?? "n/a")},

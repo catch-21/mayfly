@@ -118,7 +118,7 @@ export function Files({
                           <Chip label="bytes=name" value={r.hash_matches_name} />
                           {r.error ? <span className="chip bad">error</span> : null}
                         </>
-                      ) : f.fetchError ? (
+                      ) : f.fetch_error ? (
                         <span className="chip bad">fetch failed</span>
                       ) : (
                         <span className="chip none">not decoded</span>

@@ -24,12 +24,15 @@ pub mod layout;
 pub mod portable;
 #[cfg(feature = "pubky-sdk")]
 pub mod pubky_store;
+pub mod reader;
 pub mod signer;
 pub mod store;
 pub mod time;
 pub mod view;
 
-pub use chain::{Action, ChainClient, GenesisSpec, Policy, SyncReport};
+pub use chain::{
+    my_chains, Action, ChainClient, ChainMarker, GenesisSpec, Phase, Policy, SyncReport,
+};
 #[cfg(feature = "pubky-sdk")]
 pub use pubky_store::{PubkyStore, SessionSigner};
 pub use signer::{LocalSigner, Signer};
@@ -102,4 +105,40 @@ pub enum Error {
         /// Genesis `max_body_bytes`.
         max: u64,
     },
+}
+
+impl Error {
+    /// The variant's name, as an app matches on it (`e.name` in JavaScript).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Error::Store(_) => "Store",
+            Error::Signer(_) => "Signer",
+            Error::Core(_) => "Core",
+            Error::Rules(_) => "Rules",
+            Error::NotOpen => "NotOpen",
+            Error::NoGenesis => "NoGenesis",
+            Error::NotSeated => "NotSeated",
+            Error::AlreadyVoted { .. } => "AlreadyVoted",
+            Error::NotDesignated { .. } => "NotDesignated",
+            Error::NoSuchCandidate => "NoSuchCandidate",
+            Error::RoundDead => "RoundDead",
+            Error::AwaitingWitnesses { .. } => "AwaitingWitnesses",
+            Error::State(_) => "State",
+            Error::Oversize { .. } => "Oversize",
+        }
+    }
+
+    /// Whether this error means "the round is not ready for that yet" rather than "that is
+    /// wrong": a vote already spent, a round that has died, another party's round, or policy
+    /// holding my vote for witnesses. An app retries these on the next change and does not
+    /// show them; [`ChainClient::act`] retries a held proposal on exactly this test.
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            Error::AlreadyVoted { .. }
+                | Error::RoundDead
+                | Error::NotDesignated { .. }
+                | Error::AwaitingWitnesses { .. }
+        )
+    }
 }

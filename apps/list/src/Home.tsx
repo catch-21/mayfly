@@ -20,9 +20,9 @@ export function Home({ party, onOpen }: { party: Party; onOpen: (url: string) =>
     try {
       // Blanks and my own pubky are dropped; a repeat or a non-pubky is refused by name, before
       // a chain is written.
-      const others = parsePubkys(members, { exclude: me, isPubky: (s) => app.isPubky(s) });
+      const others = parsePubkys(members, { exclude: me });
       if (others.length === 0) throw new Error("name at least one other member by pubky");
-      const watchmen = parsePubkys(witness, { isPubky: (s) => app.isPubky(s) });
+      const watchmen = parsePubkys(witness);
       if (watchmen.includes(me)) throw new Error("you cannot be your own watchman");
       onOpen(await creating.create({ parties: [me, ...others], witnesses: watchmen }));
     } catch (e) {

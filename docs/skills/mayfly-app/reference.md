@@ -11,7 +11,11 @@ Section numbers refer to `docs/MAYFLY.md`.
 | `invite_url()` / `chain_url(&folder)` | `pubky://<owner>/pub/<client_id>/mayfly/chains/<id>/`. |
 | `sync()` → `SyncReport { verdict, suspects, folders }` | Read every known folder, fold, discover declared folders and witnesses. Moves the marker to `index/finished/` once final. |
 | `join()` | Confirm genesis with my Grant and folder (§8.1). |
-| `act()` → `Vec<Action>` | Sync + mirror + honest step (§8.2). Idempotent. |
+| `act()` → `Vec<Action>` | Sync + mirror + honest step (§8.2), then the oldest held proposal, then `auto_pass`. Idempotent. |
+| `hold(&body)` / `hold_value(json)` / `held()` / `withdraw(i)` / `clear_held()` | Proposals kept until a round takes them (§6.4); `act` sends them. |
+| `phase()` → `Phase` | `Loading`, `Stranger`, `Invited`, `Waiting`, `Open`, `Ended` (§8.1). |
+| `session_view()` → `SessionView` | `phase`, named `parties`, `my_index`, `pending` (live round only), `held`, `url`. |
+| `named_parties()` | From the committed genesis, or genesis as written before commit. |
 | `propose_body(&R::Body)` / `propose(kind, Value)` | Rules content at the open seq. Refused before writing if `may_append`/`apply` say no. |
 | `confirm(hash)` / `reject(hash)` | Vote in my round on a candidate from `verdict().open.candidates`. |
 | `repropose(hash)` / `pass()` / `skip()` | Designated‑round moves (§6.3, §6.4). `act` does these for rules content. |
@@ -26,14 +30,22 @@ Section numbers refer to `docs/MAYFLY.md`.
 | `verdict()` → `Option<&Verdict>` | The last fold. |
 | `arrangement()` → `Option<Arrangement>` | Genesis terms before commit: `parties`, `rules`, `witnesses`, `confirm_quorum`. |
 | `my_index()` / `signer()` / `store()` / `chain()` / `folders()` / `add_folder()` | Plumbing. |
-| `policy: Policy { await_witnesses, poll, max_files_per_sync }` | Client policy, not protocol. |
+| `policy: Policy { await_witnesses, poll, max_files_per_sync, auto_pass }` | Client policy, not protocol. `auto_pass` is off by default. |
 | `with_clock(fn)` | Tests: control `ts` and skip timing. |
 
 ### `Action`
 
 `Confirmed(h)`, `Reproposed { earlier, link }`, `Passed(h)`, `Skipped(h)`,
 `Rejected { link, reason }`, `Decision { candidate, round, repropose }`, `MyTurn { round }`,
-`AwaitingWitnesses { have, of, want }`.
+`Proposed(h)`, `HeldRefused { body, reason }`, `AwaitingWitnesses { have, of, want }`.
+
+### Free functions
+
+`my_chains(&store, folder)` → `Vec<ChainMarker { url, finished }>` from the index markers
+(§7). `reader::Reader::new().load(&store, url, |id| rules_for(id))` → `Loaded` (`rules`,
+`rules_known`, `view`, `view_error`, `folders`, `files` with decoded `RecordView`s); the
+reader caches decoded records by content hash. `reader::normalise_chain_url` cuts a record
+link back to its chain. `Error::name()`, `Error::is_transient()`.
 
 ### `GenesisSpec`
 
@@ -109,17 +121,18 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
   `held`, `myTurn`, `awaitingWitnesses`, `busy`, `error`, `lastActions`); `join()`,
   `propose(body, { hold? })`, `withdraw(body)`, `confirm(h)`, `reject(h)`, `repropose(h)`,
   `pass()`, `proposeClose("agreed"|"finished")`, `proposeAbandoned([i])`,
-  `confirmAbandoned(h)`, `refresh()`. `pubkyWake(app.pubky)` is the live `wake`.
+  `confirmAbandoned(h)`, `refresh()`. `pubkyWake(app.pubky)` is the live `wake`. The state
+  is the module's `session()` and `view()` plus what the browser owns (busy, error, streams).
 - `new ChainReader({ store, registry, url, pollMs? })` → `start()`, `stop()`, `refresh()`,
   `state: { loaded, error, busy, final }`; `loadChain(store, registry, url)` → `Loaded`
-  (`ref`, `rules`, `rulesKnown`, `view`, `viewError`, `folders`, `files`).
+  (`url`, `rules`, `rules_known`, `view`, `view_error`, `folders`, `files`).
 - `myChains(store, folder)`, `createChain(rules, store, signer, spec)` → invite URL,
-  `parsePubkys(raw, { exclude?, isPubky? })`, `looksLikePubky(s)`.
+  `parsePubkys(raw, { exclude? })`, `isPubky(s)`.
 - `RulesRegistry(shippedRules(), [modules])` → `resolve(id)`, `has(id)`, `ids()`;
   `RulesModule` is the JavaScript rules shape; `RulesRef = string | RulesModule`.
 - `loadMayfly(wasm?)`, `shippedRules()`, `parseChainUrl(url)` → `ChainRef` (record links
   accepted), `isChainUrl`, `verifyFrom(rules, store, url)`, `decodeRecord(bytes, name, etag?)`,
-  `describeError(e)`, `isTransient(e)`, `errorName(e)`.
+  `describeError(e)`, `isTransient(e)` (reads `e.transient`), `errorName(e)`.
 - React (`@synonymdev/mayfly-browser/react`): `useSession(app)`, `useRingSignIn(app,
   onSession)`, `useMyChains(app, party)`, `useCreateChain(party, rules)`,
   `useChainSession(app, party, url, rules, options?)`, `useChainReader(options)`.
@@ -133,17 +146,23 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
   (`js/pubky-glue.js`: `storeFromPubky(pubky, session?)`, `signerFromSession(session)`).
   `rules` is a shipped id (`"list/1"`) or a `RulesModule` object.
 - Methods mirror the Rust client in camelCase: `sync()` → `ChainView`, `join()`, `act()` →
-  `ActionView[]` (`kind: "confirmed" | "decision" | "my_turn" | …`), `proposeBody(body)`,
-  `confirm(hash)`, `reject`, `repropose`, `pass`, `skip`, `proposeClose("agreed"|"finished")`,
-  `proposeAbandoned([i])`, `confirmAbandoned`, `mirror()`, `waitForChange(ms)`, `state()`,
-  `view()`, `arrangement()`, `myIndex()`, `setClock(fn)`, `setPolicy({...})`. Hashes are
-  base64url strings. Calls on one client are serialised; a second call while one is in
-  flight throws `Busy`.
-- Free functions: `verifyFrom(rules, store, chainUrl)` → `ChainView`; `decodeRecord(bytes,
-  name, etag?)` → `RecordView`; `parseChainUrl`, `chainUrl`, `designatedProposer`, `rulesIds`
-  (the shipped ids only).
+  `ActionView[]` (`kind: "confirmed" | "decision" | "my_turn" | "proposed" | "held_refused"
+  | …`), `proposeBody(body)`, `hold(body)`, `withdraw(i)`, `clearHeld()`, `confirm(hash)`,
+  `reject`, `repropose`, `pass`, `skip`, `proposeClose("agreed"|"finished")`,
+  `proposeAbandoned([i])`, `confirmAbandoned`, `mirror()`, `waitForChange(ms)`,
+  `setClock(fn)`, `setPolicy({ awaitWitnesses?, pollMs?, maxFilesPerSync?, autoPass? })`.
+  Hashes are base64url strings. Async calls on one client are queued and run one at a time.
+  `view()`, `session()` (`{ phase, parties, my_index, pending, held, url, me }`), `state()`,
+  `arrangement()`, `myIndex()` are synchronous and read a snapshot taken after the last call.
+- `new ChainReader(store, (id) => rules | undefined)` → `load(url)` → `Loaded`; caches decoded
+  records by content hash across loads.
+- Free functions: `verifyFrom(rules, store, chainUrl)` → `ChainView`; `myChains(store,
+  folder)`; `decodeRecord(bytes, name, etag?)` → `RecordView`; `parseChainUrl` (record links
+  accepted; returns `url`), `chainUrl`, `isPubky`, `designatedProposer`, `rulesIds` (the
+  shipped ids only).
 - `KeyedSigner(clientId)`: a self-contained signer for Node and tests.
-- Errors are JS `Error`s with `name` = the client error variant, plus `Busy` and `InvalidInput`.
+- Errors are JS `Error`s with `name` = the client error variant, plus `Busy` and
+  `InvalidInput`; `transient: true` on the ones that mean "not yet".
 
 ## Watchman (`pubky_mayfly_watchman`)
 

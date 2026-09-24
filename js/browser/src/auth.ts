@@ -157,14 +157,4 @@ export class MayflyApp {
     await this.ready();
     return storeFromPubky(this.pubky);
   }
-
-  /** Whether `s` is a pubky, as the SDK judges it. */
-  isPubky(s: string): boolean {
-    try {
-      PublicKey.from(s);
-      return true;
-    } catch {
-      return false;
-    }
-  }
 }

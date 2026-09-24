@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 
 import init, {
   ChainClient,
+  ChainReader,
   KeyedSigner,
   verifyFrom,
   decodeRecord,
@@ -15,6 +16,8 @@ import init, {
   chainUrl,
   rulesIds,
   designatedProposer,
+  isPubky,
+  myChains,
 } from "../pkg/mayfly.js";
 import { Shared, memoryStore } from "./memory-store.mjs";
 
@@ -294,6 +297,110 @@ test("rules supplied as a JavaScript object run a chain and verify it", async ()
     ChainClient.create({ id: "x/1", referenceHash: "h", init() {} }, stores[0], signers[0], { parties: pubkies }),
     (e) => e.name === "InvalidInput" && /mayAppend/.test(e.message),
   );
+});
+
+test("the client holds a proposal, reports the phase, passes by policy, and lists my chains", async () => {
+  const shared = new Shared();
+  const clock = new Clock(1_757_779_812_000);
+  const signers = ["list.example", "list.example"].map((app) => new KeyedSigner(app));
+  const stores = signers.map((s) => memoryStore(s.pubky, shared));
+  const pubkies = signers.map((s) => s.pubky);
+  assert.ok(isPubky(pubkies[0]));
+  assert.ok(!isPubky("not-a-pubky"));
+
+  const alice = await ChainClient.create("list/1", stores[0], signers[0], {
+    parties: pubkies,
+    apps: ["list.example", "list.example"],
+    options: { time_control: { think_ms: THINK_MS, respond_ms: THINK_MS } },
+  });
+  alice.setClock(clock.reader());
+  alice.setPolicy({ autoPass: true });
+  await alice.sync();
+  assert.equal(alice.session().phase, "waiting");
+  assert.deepEqual(alice.session().parties, pubkies);
+  assert.equal(alice.session().my_index, 0);
+  assert.equal(alice.myIndex(), 0);
+  assert.equal(alice.state(), undefined);
+  assert.deepEqual(await myChains(stores[0], "/pub/list.example/mayfly/"), [{ url: alice.inviteUrl(), finished: false }]);
+
+  const bob = ChainClient.openUrl("list/1", stores[1], signers[1], alice.inviteUrl());
+  bob.setClock(clock.reader());
+  bob.setPolicy({ autoPass: true });
+  assert.equal(bob.session().phase, "loading");
+  await bob.sync();
+  assert.equal(bob.session().phase, "invited");
+  // A stranger's client sees genesis and is told so.
+  const carol = new KeyedSigner("list.example");
+  const stranger = ChainClient.openUrl("list/1", memoryStore(carol.pubky, shared), carol, alice.inviteUrl());
+  await stranger.sync();
+  assert.equal(stranger.session().phase, "stranger");
+  assert.equal(stranger.myIndex(), undefined);
+
+  await bob.join();
+  const clients = [alice, bob];
+  const all = [0, 1];
+  await settle(clients, all, clock, 1);
+  assert.equal(alice.session().phase, "open");
+
+  // Two calls at once queue rather than the second failing with Busy.
+  const [, joined] = await Promise.all([alice.act(), bob.act()]);
+  assert.ok(Array.isArray(joined));
+  const [a1, a2] = await Promise.all([alice.act(), alice.act()]);
+  assert.ok(Array.isArray(a1) && Array.isArray(a2));
+
+  // A held add goes out from act() and is reported; the session lists it until then.
+  await alice.proposeBody({ kind: "add", id: "apples", text: "Apples" });
+  await settle(clients, all, clock, 2);
+  const close = await alice.proposeClose("agreed");
+  await bob.act();
+  await bob.reject(close);
+  await alice.hold({ kind: "add", id: "pears", text: "Pears" });
+  assert.deepEqual(alice.session().held, [{ kind: "add", id: "pears", text: "Pears" }]);
+  let proposed = false;
+  for (let i = 0; i < 6 && !proposed; i++) {
+    for (const c of clients) {
+      const acts = await c.act();
+      if (c === alice && acts.some((a) => a.kind === "proposed")) proposed = true;
+      if (c === bob && acts.some((a) => a.kind === "decision" && a.repropose)) await bob.pass();
+    }
+    clock.advance(THINK_MS + 1);
+  }
+  assert.ok(proposed, "act() proposed the held add");
+  assert.deepEqual(alice.session().held, []);
+  await settle(clients, all, clock, 3);
+  assert.deepEqual(items(alice), ["Apples", "Pears"]);
+  assert.equal(alice.session().pending.length, 0);
+  assert.ok(!alice.view().anomalies.some((a) => a.kind === "Obstruction"));
+
+  // A held body the rules refuse is dropped with the reason.
+  await bob.hold({ kind: "tick", id: "nothing" });
+  const acts = await bob.act();
+  assert.ok(acts.some((a) => a.kind === "held_refused" && /rules/.test(a.reason)), JSON.stringify(acts));
+  assert.deepEqual(bob.session().held, []);
+
+  // Errors that mean "not yet" say so.
+  const err = await alice.proposeBody({ kind: "add", id: "x", text: "X" }).then(() => null, (e) => e);
+  if (err) assert.equal(err.transient, ["AlreadyVoted", "NotDesignated", "RoundDead"].includes(err.name));
+
+  // The reader: a record link is cut back to the chain, the resolver supplies the rules, the
+  // other member's folder is walked, and a second load reuses what it decoded.
+  const reader = new ChainReader(memoryStore("", shared), (id) => (id === "list/1" ? "list/1" : undefined));
+  const alicePaths = shared.paths(pubkies[0]).filter((p) => p.includes("/links/00000000-"));
+  const loaded = await reader.load(`pubky://${pubkies[0]}${alicePaths[0]}`);
+  assert.equal(loaded.url, alice.inviteUrl());
+  assert.equal(loaded.rules, "list/1");
+  assert.equal(loaded.rules_known, true);
+  assert.equal(loaded.view.committed.length, 3);
+  assert.equal(loaded.folders.filter((f) => f.role === "seat").length, 1);
+  assert.ok(loaded.files.every((f) => !f.record || f.record.signature_ok !== false));
+  const parsed = parseChainUrl(`pubky://${pubkies[0]}${alicePaths[0]}`);
+  assert.equal(parsed.url, alice.inviteUrl());
+  const blind = new ChainReader(memoryStore("", shared), () => undefined);
+  const unseen = await blind.load(alice.inviteUrl());
+  assert.equal(unseen.view, null);
+  assert.equal(unseen.rules_known, false);
+  assert.match(unseen.view_error, /list\/1/);
+  assert.ok(unseen.files.length > 0);
 });
 
 test("errors are JS Errors named after the variant", async () => {

@@ -1,12 +1,9 @@
-// Errors from the module are JS `Error`s whose `name` is the client variant. Some mean
-// "wait for the chain to move", not "something is wrong"; the loop retries those and never
-// shows them.
-
-/** Errors that mean the round is not ready for me yet. */
-const TRANSIENT = new Set(["AlreadyVoted", "RoundDead", "NotDesignated", "Busy", "AwaitingWitnesses"]);
+// Errors from the module are JS `Error`s whose `name` is the client variant. The module
+// marks the ones that mean "wait for the chain to move" with `transient: true`; the loop
+// retries those and never shows them.
 
 export function isTransient(e: unknown): boolean {
-  return e instanceof Error && TRANSIENT.has(e.name);
+  return e instanceof Error && (e as Error & { transient?: boolean }).transient === true;
 }
 
 /** The variant name, or `undefined` for anything that is not a named error. */

@@ -208,8 +208,8 @@ export function App() {
 
       {parseError ? <div className="error">{parseError}</div> : null}
       {chain.error ? <div className="error">{chain.error}</div> : null}
-      {loaded?.viewError ? <div className="error">{loaded.viewError}</div> : null}
-      {loaded && loaded.rules && !loaded.rulesKnown ? (
+      {loaded?.view_error ? <div className="error">{loaded.view_error}</div> : null}
+      {loaded && loaded.rules && !loaded.rules_known ? (
         <div className="notice">
           Rules <code>{loaded.rules}</code> are not in this build, so the chain cannot be
           verified here. The files the initiator's folder lists are still shown below, decoded.

@@ -177,6 +177,12 @@ impl Demo {
                     Action::MyTurn { round } => {
                         format!("{who}: round {round} is theirs to propose in")
                     }
+                    Action::Proposed(h) => {
+                        format!("{who} put forward a held proposal as {}", h.h16())
+                    }
+                    Action::HeldRefused { body, reason } => {
+                        format!("{who}'s held {} was refused — {reason}", body["kind"])
+                    }
                     Action::AwaitingWitnesses { have, of, .. } => {
                         format!("{who} is waiting for witnesses ({have}/{of})")
                     }

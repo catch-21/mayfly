@@ -106,9 +106,96 @@ export type ActionView =
   | { kind: "rejected"; link: string; reason: string }
   | { kind: "decision"; candidate: CandidateView; round: number; repropose: boolean }
   | { kind: "my_turn"; round: number }
-  | { kind: "awaiting_witnesses"; have: number; of: number; want: number };
+  | { kind: "awaiting_witnesses"; have: number; of: number; want: number }
+
+  | { kind: "proposed"; hash: string }
+  | { kind: "held_refused"; body: Body; reason: string };
 
 export type DecisionAction = Extract<ActionView, { kind: "decision" }>;
+
+/** Where a member stands with a chain (§8.1). */
+export type Phase =
+  /** Genesis has not been read yet. */
+  | "loading"
+  /** Genesis names parties and I am not one of them. */
+  | "stranger"
+  /** I am named and have not signed genesis: show the terms, offer to join. */
+  | "invited"
+  /** I have signed; genesis is not committed until everyone has. */
+  | "waiting"
+  /** Committed and ongoing. */
+  | "open"
+  /** Final: a close has committed and been sealed by its successor. */
+  | "ended";
+
+/** What the client derives for a page between two calls. */
+export interface SessionView<B extends Body = Body> {
+  chain: string;
+  /** This chain at my folder: the invite URL. */
+  url: string;
+  me: string;
+  phase: Phase;
+  /** From the committed genesis, or from genesis as written before it commits. */
+  parties: string[];
+  my_index: number | null;
+  /** Candidates of the live round only. */
+  pending: CandidateView[];
+  /** Proposals held until a round takes them, oldest first. */
+  held: B[];
+}
+
+/** One chain a member is on. */
+export interface MyChain {
+  url: string;
+  finished: boolean;
+}
+
+/** Which of the chain's declared folders a file was read from. */
+export type FolderRole = "initiator" | "seat" | "witness";
+
+/** One folder the reader lists. */
+export interface Folder {
+  role: FolderRole;
+  owner: string;
+  /** Absolute prefix listed, ending in `/`. */
+  prefix: string;
+  /** Why the listing failed, if it did. */
+  error: string | null;
+}
+
+/** One listed file, decoded when it is a `.jws`. */
+export interface LoadedFile {
+  folder: Folder;
+  /** Absolute path on the owner's homeserver. */
+  path: string;
+  /** Path relative to the folder prefix. */
+  relative: string;
+  /** The homeserver's ETag, base64url, when the listing reported one. */
+  content_hash: string | null;
+  /** Decoded record; absent for files that are not `.jws` or that could not be fetched. */
+  record: RecordView | null;
+  /** Why the bytes could not be fetched, if they could not. */
+  fetch_error: string | null;
+}
+
+/** A chain as read from files: everything a page renders. */
+export interface Loaded<S = unknown> {
+  chain: string;
+  owner: string;
+  folder: string;
+  /** The canonical chain URL. */
+  url: string;
+  /** Rules id read from genesis; `null` when genesis could not be found or read. */
+  rules: string | null;
+  /** Whether the registry could run `rules`. */
+  rules_known: boolean;
+  /** The verified chain, when verification ran and succeeded. */
+  view: ChainView<S> | null;
+  /** Why there is no view: no genesis yet, unknown rules, a store error. */
+  view_error: string | null;
+  folders: Folder[];
+  files: LoadedFile[];
+}
 
 /** One decoded record file (§14). */
 export interface RecordView {
@@ -124,7 +211,7 @@ export interface RecordView {
   error: string | null;
 }
 
-/** A parsed chain URL. */
+/** A parsed chain URL; a record link inside the chain folder parses to the same. */
 export interface ChainRef {
   chain: string;
   owner: string;

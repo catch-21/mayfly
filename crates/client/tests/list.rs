@@ -479,6 +479,272 @@ async fn a_refused_agreed_close_is_followed_by_an_add() {
     }
 }
 
+/// The browser's shape of the same flow: the add is *held* by whoever is not the designated
+/// proposer, and `act()` puts it forward on its own once a round takes it, without the page
+/// knowing whose round it is. Auto-pass lets the other member's empty round move on.
+#[tokio::test]
+async fn a_held_add_goes_out_when_a_round_takes_it() {
+    let (mut clients, clock) = two_members().await;
+    for c in clients.iter_mut() {
+        c.policy.auto_pass = true;
+    }
+    clients[0]
+        .propose_body(&Body::Add {
+            id: "apples".into(),
+            text: "Apples".into(),
+            qty: None,
+        })
+        .await
+        .unwrap();
+    settle(&mut clients, &[0, 1], &clock, 2).await;
+    let close = clients[0].propose_close(CloseReason::Agreed).await.unwrap();
+    clients[1].sync().await.unwrap();
+    clients[1].act().await.unwrap();
+    clients[1].reject(close).await.unwrap();
+
+    // Alice types Pears straight after. Whichever member round 1 falls to, the add is held
+    // until it can go out and then reported as proposed; the "put it forward again?" card is
+    // never left on Alice's screen, and Bob, asked the same about a close he refused, lets it
+    // go rather than obstructing.
+    clients[0]
+        .hold(&Body::Add {
+            id: "pears".into(),
+            text: "Pears".into(),
+            qty: None,
+        })
+        .unwrap();
+    assert_eq!(clients[0].held().len(), 1);
+    let mut proposed_by_act = false;
+    for _ in 0..6 {
+        for (i, c) in clients.iter_mut().enumerate() {
+            let actions = c.act().await.unwrap();
+            if actions.iter().any(|a| matches!(a, Action::Proposed(_))) {
+                assert_eq!(i, 0);
+                proposed_by_act = true;
+            }
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, Action::HeldRefused { .. })),
+                "{actions:?}"
+            );
+            if i == 1
+                && actions.iter().any(|a| {
+                    matches!(
+                        a,
+                        Action::Decision {
+                            repropose: true,
+                            ..
+                        }
+                    )
+                })
+            {
+                c.pass().await.unwrap();
+            }
+        }
+        if clients[0].verdict().unwrap().committed.len() >= 3 {
+            break;
+        }
+        clock.advance(THINK_MS + 1);
+    }
+    assert!(proposed_by_act, "act() sent the held add");
+    assert!(clients[0].held().is_empty());
+    settle(&mut clients, &[0, 1], &clock, 3).await;
+    for c in &clients {
+        let v = c.verdict().unwrap();
+        assert!(
+            v.anomalies
+                .iter()
+                .all(|a| a.kind != pubky_mayfly::fold::AnomalyKind::Obstruction),
+            "{:?}",
+            v.anomalies
+        );
+        assert_eq!(
+            committed_items(c),
+            vec!["Apples".to_string(), "Pears".to_string()]
+        );
+        assert_eq!(c.phase(), pubky_mayfly_client::Phase::Open);
+        assert!(c.session_view().pending.is_empty());
+    }
+
+    // A held body the rules refuse is dropped with the reason, not retried forever.
+    clients[1]
+        .hold(&Body::Tick {
+            id: "nothing".into(),
+        })
+        .unwrap();
+    let actions = clients[1].act().await.unwrap();
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::HeldRefused { reason, .. } if reason.contains("rules"))),
+        "{actions:?}"
+    );
+    assert!(clients[1].held().is_empty());
+}
+
+/// `phase()` follows a member from the invite to the end, and the home index follows the
+/// chain from `active` to `finished`.
+#[tokio::test]
+async fn phases_and_the_home_index_follow_the_chain() {
+    let shared = MemoryStore::shared();
+    let clock = Clock(Arc::new(AtomicU64::new(NOW_S * 1000)));
+    let (alice_s, alice_st) = party(&shared, "list.example");
+    let (bob_s, bob_st) = party(&shared, "list.example");
+    let (carol_s, carol_st) = party(&shared, "list.example");
+    let spec = GenesisSpec::new(vec![alice_s.pubky(), bob_s.pubky()])
+        .with_apps(&["list.example", "list.example"]);
+    let mut alice = ChainClient::create(List, alice_st.clone(), alice_s.clone(), spec)
+        .await
+        .unwrap()
+        .with_clock(clock.reader());
+    let invite = alice.invite_url();
+    alice.sync().await.unwrap();
+    assert_eq!(alice.phase(), pubky_mayfly_client::Phase::Waiting);
+    assert_eq!(
+        alice.session_view().parties,
+        vec![alice_s.pubky(), bob_s.pubky()]
+    );
+
+    let mut bob = ChainClient::open_url(List, bob_st.clone(), bob_s, &invite)
+        .unwrap()
+        .with_clock(clock.reader());
+    assert_eq!(bob.phase(), pubky_mayfly_client::Phase::Loading);
+    bob.sync().await.unwrap();
+    assert_eq!(bob.phase(), pubky_mayfly_client::Phase::Invited);
+    assert_eq!(bob.session_view().my_index, Some(1));
+
+    let mut carol = ChainClient::open_url(List, carol_st, carol_s, &invite)
+        .unwrap()
+        .with_clock(clock.reader());
+    carol.sync().await.unwrap();
+    assert_eq!(carol.phase(), pubky_mayfly_client::Phase::Stranger);
+
+    bob.join().await.unwrap();
+    let mut clients = vec![alice, bob];
+    settle(&mut clients, &[0, 1], &clock, 1).await;
+    for c in &clients {
+        assert_eq!(c.phase(), pubky_mayfly_client::Phase::Open);
+    }
+    let folder = Folder::for_app("list.example");
+    assert_eq!(
+        pubky_mayfly_client::my_chains(&bob_st, folder.as_str())
+            .await
+            .unwrap(),
+        vec![pubky_mayfly_client::ChainMarker {
+            url: invite.clone(),
+            finished: false,
+        }]
+    );
+
+    clients[0].propose_body(&Body::Archive {}).await.unwrap();
+    settle(&mut clients, &[0, 1], &clock, 2).await;
+    let close = clients[1]
+        .propose_close(CloseReason::Finished)
+        .await
+        .unwrap();
+    clients[0].sync().await.unwrap();
+    clients[0].confirm(close).await.unwrap();
+    settle(&mut clients, &[0, 1], &clock, 3).await;
+    for c in &clients {
+        assert_eq!(c.phase(), pubky_mayfly_client::Phase::Ended);
+    }
+    assert_eq!(
+        pubky_mayfly_client::my_chains(&alice_st, folder.as_str())
+            .await
+            .unwrap(),
+        vec![pubky_mayfly_client::ChainMarker {
+            url: invite.clone(),
+            finished: true,
+        }]
+    );
+}
+
+/// The reader lists and decodes as anyone, verifies when it has the rules, and says why not
+/// when it does not.
+#[tokio::test]
+async fn the_reader_verifies_with_the_rules_it_is_given() {
+    let shared = MemoryStore::shared();
+    let clock = Clock(Arc::new(AtomicU64::new(NOW_S * 1000)));
+    let (alice_s, alice_st) = party(&shared, "list.example");
+    let (bob_s, bob_st) = party(&shared, "list.example");
+    let spec = GenesisSpec::new(vec![alice_s.pubky(), bob_s.pubky()])
+        .with_apps(&["list.example", "list.example"]);
+    let alice = ChainClient::create(List, alice_st, alice_s, spec)
+        .await
+        .unwrap()
+        .with_clock(clock.reader());
+    let mut bob = ChainClient::open_url(List, bob_st, bob_s, &alice.invite_url())
+        .unwrap()
+        .with_clock(clock.reader());
+    bob.sync().await.unwrap();
+    bob.join().await.unwrap();
+    let mut clients = vec![alice, bob];
+    settle(&mut clients, &[0, 1], &clock, 1).await;
+    clients[0]
+        .propose_body(&Body::Add {
+            id: "apples".into(),
+            text: "Apples".into(),
+            qty: None,
+        })
+        .await
+        .unwrap();
+    settle(&mut clients, &[0, 1], &clock, 2).await;
+    let invite = clients[0].invite_url();
+    let observer = MemoryStore::new(String::new(), Arc::clone(&shared));
+
+    let mut reader = pubky_mayfly_client::reader::Reader::new();
+    let record_link = format!("{invite}links/00000000-abcdefghijklmnop.jws");
+    let loaded = reader
+        .load(&observer, &record_link, |id| {
+            (id == "list/1").then_some(List)
+        })
+        .await
+        .unwrap();
+    assert_eq!(loaded.url, invite);
+    assert_eq!(loaded.rules.as_deref(), Some("list/1"));
+    assert!(loaded.rules_known);
+    let view = loaded.view.as_ref().expect("verified");
+    assert_eq!(view.committed.len(), 2);
+    assert_eq!(
+        loaded
+            .folders
+            .iter()
+            .filter(|f| f.role == pubky_mayfly_client::reader::FolderRole::Seat)
+            .count(),
+        1,
+        "the other member's folder is walked too"
+    );
+    assert!(loaded
+        .files
+        .iter()
+        .any(|f| f.relative.starts_with("links/00000000-") && f.record.is_some()));
+    assert!(loaded.files.iter().all(|f| f
+        .record
+        .as_ref()
+        .is_none_or(|r| r.signature_ok != Some(false))));
+
+    // Loading again reuses decoded records for files whose hash has not changed.
+    let again = reader
+        .load(&observer, &invite, |id| (id == "list/1").then_some(List))
+        .await
+        .unwrap();
+    assert_eq!(again.files.len(), loaded.files.len());
+
+    let blind = reader
+        .load(&observer, &invite, |_| None::<List>)
+        .await
+        .unwrap();
+    assert!(blind.view.is_none());
+    assert!(!blind.rules_known);
+    assert_eq!(blind.rules.as_deref(), Some("list/1"));
+    assert!(blind.view_error.as_deref().unwrap().contains("list/1"));
+    assert!(
+        !blind.files.is_empty(),
+        "the files are still listed and decoded"
+    );
+}
+
 fn committed_items(c: &Client) -> Vec<String> {
     c.state()
         .unwrap()

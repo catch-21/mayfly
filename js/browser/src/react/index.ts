@@ -5,12 +5,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GrantAuthFlow, Session } from "@synonymdev/pubky";
 
 import type { MayflyApp, Party } from "../auth.js";
-import { createChain, myChains, type MyChain } from "../chains.js";
+import { createChain, myChains } from "../chains.js";
 import { describeError } from "../errors.js";
 import { ChainReader, type ChainReaderOptions, type ReaderState } from "../reader.js";
 import type { RulesRef } from "../rules.js";
 import { ChainSession, type ChainSessionOptions, type ChainState } from "../session.js";
-import type { Body, ChainSpec } from "../types.js";
+import type { Body, ChainSpec, MyChain } from "../types.js";
 import { pubkyWake } from "../wake.js";
 
 /**
@@ -179,14 +179,15 @@ export type SessionHandle<S, B extends Body> = ChainState<S, B> &
 
 /**
  * One open chain for one member: state plus actions. Opens a `ChainSession` per (party, url),
- * with live updates from the other members' homeservers, and stops it when the page leaves.
+ * with live updates from the other members' homeservers (`options.wake` to supply your own),
+ * and stops it when the page leaves.
  */
 export function useChainSession<S = unknown, B extends Body = Body>(
   app: MayflyApp,
   party: Party,
   url: string,
   rules: RulesRef,
-  options: Omit<ChainSessionOptions<B>, "rules" | "store" | "signer" | "url" | "wake"> = {},
+  options: Omit<ChainSessionOptions<B>, "rules" | "store" | "signer" | "url"> = {},
 ): SessionHandle<S, B> {
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -198,7 +199,7 @@ export function useChainSession<S = unknown, B extends Body = Body>(
         store: party.store,
         signer: party.signer,
         url,
-        wake: pubkyWake(app.pubky),
+        wake: optionsRef.current.wake ?? pubkyWake(app.pubky),
       }),
     [app, party, url, rules],
   );

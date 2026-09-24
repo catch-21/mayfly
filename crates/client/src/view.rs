@@ -77,6 +77,41 @@ pub struct CandidateView {
     pub votes: usize,
 }
 
+impl From<&fold::OpenCandidate> for CandidateView {
+    fn from(c: &fold::OpenCandidate) -> Self {
+        Self {
+            hash: c.hash.to_base64url(),
+            h16: c.hash.h16(),
+            author: c.author,
+            kind: c.kind.clone(),
+            round: c.round,
+            votes: c.votes,
+        }
+    }
+}
+
+/// What a party's page derives from its client between two calls (§8.1, §6.4): where the
+/// party stands, whom to name, what is pending in the live round, and what is held.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionView {
+    /// Chain id.
+    pub chain: String,
+    /// This chain at my folder: the URL to invite others with.
+    pub url: String,
+    /// My pubky.
+    pub me: String,
+    /// Where I stand.
+    pub phase: crate::chain::Phase,
+    /// The parties, from the committed genesis or from genesis as written before it commits.
+    pub parties: Vec<String>,
+    /// My index among `parties`.
+    pub my_index: Option<PartyIndex>,
+    /// Candidates of the live round only.
+    pub pending: Vec<CandidateView>,
+    /// Proposals held until a round takes them, oldest first, `kind` inside each.
+    pub held: Vec<Value>,
+}
+
 /// The open seq.
 #[derive(Debug, Clone, Serialize)]
 pub struct OpenSeqView {
@@ -407,6 +442,18 @@ pub enum ActionView {
         /// The round.
         round: u32,
     },
+    /// A held proposal went out.
+    Proposed {
+        /// The link, base64url.
+        hash: String,
+    },
+    /// A held proposal was refused for good and dropped.
+    HeldRefused {
+        /// The body, `kind` included.
+        body: Value,
+        /// Why.
+        reason: String,
+    },
     /// Holding my vote for witnesses.
     AwaitingWitnesses {
         /// Receipts held.
@@ -443,18 +490,18 @@ impl From<&Action> for ActionView {
                 round,
                 repropose,
             } => Self::Decision {
-                candidate: CandidateView {
-                    hash: candidate.hash.to_base64url(),
-                    h16: candidate.hash.h16(),
-                    author: candidate.author,
-                    kind: candidate.kind.clone(),
-                    round: candidate.round,
-                    votes: candidate.votes,
-                },
+                candidate: CandidateView::from(candidate),
                 round: *round,
                 repropose: *repropose,
             },
             Action::MyTurn { round } => Self::MyTurn { round: *round },
+            Action::Proposed(h) => Self::Proposed {
+                hash: h.to_base64url(),
+            },
+            Action::HeldRefused { body, reason } => Self::HeldRefused {
+                body: body.clone(),
+                reason: reason.clone(),
+            },
             Action::AwaitingWitnesses { have, of, want } => Self::AwaitingWitnesses {
                 have: *have,
                 of: *of,
