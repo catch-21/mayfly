@@ -21,9 +21,10 @@ Section numbers refer to `docs/MAYFLY.md`.
 | `propose_reveal()` | Commit‑reveal nonce when rules `wants_reveals` (§6.6). |
 | `propose_rekey(K)` / `propose_recover(K)` | Key change (§6.7). Recover is slow and vetoable by the old key. |
 | `mirror()` | Copy committed links, QCs, receipts, engagements into my folder (§7). `act` does it. |
-| `wait_for_change(timeout)` / `wait_for_event(timeout)` (PubkyStore) | Block until a folder changes (poll / SSE). |
-| `state()` → `Option<R::State>` | Rules state at the head (`None` before rules initialise). |
+| `wait_for_change(timeout)` | Poll until a known folder changes. On a `PubkyStore`, prefer the store's own `wait_for_event(timeout)` (the homeserver's event stream). |
+| `state()` → `Option<R::State>` | Rules state at the head (`None` until genesis commits). |
 | `verdict()` → `Option<&Verdict>` | The last fold. |
+| `arrangement()` → `Option<Arrangement>` | Genesis terms before commit: `parties`, `rules`, `witnesses`, `confirm_quorum`. |
 | `my_index()` / `signer()` / `store()` / `chain()` / `folders()` / `add_folder()` | Plumbing. |
 | `policy: Policy { await_witnesses, poll, max_files_per_sync }` | Client policy, not protocol. |
 | `with_clock(fn)` | Tests: control `ts` and skip timing. |
@@ -43,7 +44,10 @@ Section numbers refer to `docs/MAYFLY.md`.
 ### Errors worth matching
 
 `AlreadyVoted { seq, round }`, `NotDesignated { round, designated }`, `NoSuchCandidate`,
-`RoundDead`, `AwaitingWitnesses { .. }`, `NotSeated`, `NoGenesis`, `NotOpen`, `Rules(msg)`.
+`RoundDead`, `AwaitingWitnesses { .. }`, `NotSeated`, `NoGenesis`, `NotOpen`, `Rules(msg)`,
+`Oversize { len, max }` (record larger than genesis `max_body_bytes`; nothing was written).
+`AlreadyVoted`, `RoundDead`, `NotDesignated` and `AwaitingWitnesses` are retryable. JS errors
+use the variant name (`Oversize`, `AlreadyVoted`, …), plus `Busy` and `InvalidInput`.
 
 ## `pubky_mayfly::fold::Verdict`
 
@@ -51,7 +55,7 @@ Section numbers refer to `docs/MAYFLY.md`.
 | --- | --- |
 | `committed: Vec<Committed { link, author, qc, is_final, witnessed: (m, k) }>` | The chain, seq 0 up. `is_final` once a successor embedded the QC. |
 | `status: Status` | `Ongoing`, `Stalled { seq, round, dead, awaiting }`, `Paused { seq, close: CloseState }`, `Closed(Outcome)`, `Abandoned { subjects, outcome }`. |
-| `open: Option<OpenView { seq, round, dead, candidates, voters }>` | The open seq; `candidates` are already fold‑valid. |
+| `open: Option<OpenView { seq, round, dead, candidates, voters }>` | The open seq; `candidates` are already fold‑valid. While `dead`, `round` is the dead round; `Action::Decision.round` is the next one. |
 | `seats: Vec<Seat { pubky, kid, client_id, paths, grant_exp, commit }>` | Established parties. |
 | `engaged: Vec<Engaged { pubky, kid, until, poll_ms, path }>` | Witnesses at the head. |
 | `anomalies: Vec<Anomaly { against, seq, kind, evidence }>` | Attributed misbehaviour (§11.6). |
@@ -87,8 +91,10 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
   `.chain(&id)` → `links/`, `confirms/`, `rejects/`, `receipts/<kid>/`; `.witness(&id)`;
   `.active(&id)` / `.finished(&id)`; `parse_chain_url(url)`.
 - Views (`pubky_mayfly_client::view`): `chain_view(&rules, &verdict, &suspects)` → `ChainView`
-  (parties, status, committed `LinkView`s with body and base64url hash, open seq, seats,
-  witnesses, anomalies, suspects, rules state as JSON); `ActionView::from(&action)`;
+  (`parties` from the *committed* genesis — empty until everyone has joined; use
+  `Arrangement` before that — `status`, `is_final`, committed `LinkView`s with body and
+  base64url hash, `open`, `seats`, `engaged`, `anomalies`, `suspects`, rules `state` as JSON);
+  `ActionView::from(&action)`;
   `decode_record(bytes, name, etag)` → `RecordView` (typ, payload with embedded JWSs unpacked,
   `signature_ok`, `hash_matches_etag`, `hash_matches_name`). All `Serialize`; what a page renders.
 
@@ -101,7 +107,9 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
   `ActionView[]` (`kind: "confirmed" | "decision" | "my_turn" | …`), `proposeBody(body)`,
   `confirm(hash)`, `reject`, `repropose`, `pass`, `skip`, `proposeClose("agreed"|"finished")`,
   `proposeAbandoned([i])`, `confirmAbandoned`, `mirror()`, `waitForChange(ms)`, `state()`,
-  `view()`, `myIndex()`, `setClock(fn)`, `setPolicy({...})`. Hashes are base64url strings.
+  `view()`, `arrangement()`, `myIndex()`, `setClock(fn)`, `setPolicy({...})`. Hashes are
+  base64url strings. Calls on one client are serialised; a second call while one is in
+  flight throws `Busy`.
 - Free functions: `verifyFrom(rulesId, store, chainUrl)` → `ChainView`; `decodeRecord(bytes,
   name, etag?)` → `RecordView`; `parseChainUrl`, `chainUrl`, `designatedProposer`, `rulesIds`.
 - `KeyedSigner(clientId)`: a self-contained signer for Node and tests.

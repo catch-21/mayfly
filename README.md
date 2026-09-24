@@ -20,7 +20,7 @@ crates/
   core/     pubky-mayfly          records, fold (verifier), rounds and votes, Grant checks,
                                      witness quorum, Rules trait, N-party simulator and the
                                      tally/1 test rules. WASM-safe, no I/O.
-  rules/    pubky-mayfly-rules    list/1, later chess/1 and document/1
+  rules/    pubky-mayfly-rules    list/1, the shopping-list rules. Further apps are their own projects
   client/   pubky-mayfly-client   ChainClient: sync-before-voting, propose/confirm/reject/
                                      mirror, recover, change watching; Store and Signer traits
                                      with in-memory and Pubky SDK implementations
@@ -244,7 +244,8 @@ published.
 
 `docs/skills/mayfly-app/SKILL.md` is the guide to writing an app or a rules module, for people
 and agents alike, with an API cheat-sheet (`reference.md`) beside it; `AGENTS.md` points agents
-there on entry. The shape of an app is
+there on entry. The shopping list (`apps/list`, `apps/view`) is the only example app here.
+Further apps are their own projects that depend on these crates. The shape of an app is
 `crates/client/tests/list.rs`: join from an invite URL, call `act()` on every change, put
 `Action::Decision`s to the user. In JavaScript the same shape is `crates/wasm/tests/list.test.mjs`.
 
