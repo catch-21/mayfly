@@ -1,21 +1,18 @@
 import { useState } from "react";
-import type { Session } from "@synonymdev/pubky";
+import type { CandidateView, Party } from "@synonymdev/mayfly-browser";
 
+import { VIEWER_URL } from "./config";
 import { copy, partyLabel, short } from "./format";
-import type { CandidateView } from "./mayfly";
-import { VIEWER_URL } from "./pubky";
 import { useList } from "./useList";
 
-export function ListPage({ session, url, onBack }: { session: Session; url: string; onBack: () => void }) {
-  const list = useList(session, url);
+export function ListPage({ party, url, onBack }: { party: Party; url: string; onBack: () => void }) {
+  const list = useList(party, url);
   const [text, setText] = useState("");
   const [editing, setEditing] = useState<string>();
   const [draft, setDraft] = useState("");
   const [copied, setCopied] = useState(false);
   const v = list.view;
-  // Genesis is not committed until every member confirms it, so the parties come from the
-  // arrangement until then (§8.1).
-  const named = v && v.parties.length > 0 ? v.parties : (list.arrangement?.parties ?? []);
+  const named = list.parties;
 
   const share = async () => {
     setCopied(await copy(url));
@@ -39,7 +36,7 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
     </header>
   );
 
-  if (named.length === 0) {
+  if (list.phase === "loading") {
     return (
       <main className="narrow">
         {header}
@@ -48,12 +45,7 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
     );
   }
 
-  const mine = named.indexOf(list.me);
-  // Genesis commits only when every member has confirmed it (§8.1); until then the view has
-  // no parties and nothing can be added, whoever has already signed.
-  const committed = !!v && v.parties.length > 0;
-
-  if (mine < 0) {
+  if (list.phase === "stranger") {
     return (
       <main className="narrow">
         {header}
@@ -69,13 +61,14 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
     );
   }
 
-  if (!list.seated || !committed) {
+  if (list.phase === "invited" || list.phase === "waiting") {
     const watchmen = list.arrangement?.witnesses.length ?? v?.engaged.length ?? 0;
+    const mine = list.myIndex;
     return (
       <main className="narrow">
         {header}
         <section className="card">
-          {list.seated ? (
+          {list.phase === "waiting" ? (
             <>
               <h2>Waiting for the others</h2>
               <p>
@@ -98,8 +91,8 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
             </>
           )}
           <Members parties={named} seated={v?.seats ?? []} me={list.me} />
-          {!list.seated && mine > 0 && (
-            <button onClick={list.join} disabled={list.busy}>
+          {list.phase === "invited" && (
+            <button onClick={() => void list.join()} disabled={list.busy}>
               {list.busy ? "Joining…" : "Join"}
             </button>
           )}
@@ -118,13 +111,8 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
     );
   }
 
-  const items = v.state?.items ?? [];
-  // A dead round's candidates have already been voted on. Showing them as pending makes a
-  // refused close look still open, and hides that the next round has started.
-  const pending = (v.open?.candidates ?? []).filter(
-    (k) => k.round === v.open?.round && !v.open?.dead,
-  );
-  const closed = v.is_final || v.state?.archived;
+  const items = list.items;
+  const closed = list.phase === "ended" || list.state?.archived;
   const waiting = v.status.kind === "stalled" ? v.status.parties : [];
   // A proposal nobody has confirmed yet is what the pending rows already show; the verifier
   // records it as an anomaly attributed to nobody. Only attributed anomalies, and tampered
@@ -222,7 +210,7 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
               </li>
             ),
           )}
-          {pending.map((k) => (
+          {list.pending.map((k) => (
             <li key={k.hash} className="pending">
               <span className="dot" />
               <span>
@@ -230,15 +218,15 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
               </span>
             </li>
           ))}
-          {list.waiting && (
-            <li className="pending">
+          {list.held.map((h) => (
+            <li key={`held-${h.kind === "add" ? h.id : h.kind}`} className="pending">
               <span className="dot" />
               <span>
-                you: <b>add</b> {list.waiting} · waiting for your turn
+                you: <b>{h.kind}</b> {h.kind === "add" ? h.text : ""} · waiting for your turn
               </span>
             </li>
-          )}
-          {items.length === 0 && pending.length === 0 && !list.waiting && (
+          ))}
+          {items.length === 0 && list.pending.length === 0 && list.held.length === 0 && (
             <li className="dim">Nothing on the list yet.</li>
           )}
         </ul>
@@ -281,10 +269,10 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
         <section className="card decision">
           <h2>Needs your answer</h2>
           {list.decisions.map((d) => {
-            const k = d.candidate.candidate;
+            const k = d.action.candidate;
             const who = partyLabel(named, k.author, list.me);
             const verb = k.kind === "close" ? "close this list for good" : `${k.kind} this list`;
-            if (d.candidate.repropose) {
+            if (d.action.repropose) {
               // The round died without confirming it, and I am the one to propose next.
               return (
                 <div key={k.hash} className="ask">
@@ -331,10 +319,10 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
             agree.
           </p>
           <div className="row">
-            <button className="ghost" onClick={list.archive} disabled={list.busy}>
+            <button className="ghost" onClick={() => void list.archive()} disabled={list.busy}>
               Archive
             </button>
-            <button className="ghost" onClick={list.close} disabled={list.busy}>
+            <button className="ghost" onClick={() => void list.close()} disabled={list.busy}>
               Propose to close
             </button>
           </div>
@@ -365,15 +353,7 @@ export function ListPage({ session, url, onBack }: { session: Session; url: stri
   );
 }
 
-function Members({
-  parties,
-  seated,
-  me,
-}: {
-  parties: string[];
-  seated: { pubky: string }[];
-  me: string;
-}) {
+function Members({ parties, seated, me }: { parties: string[]; seated: { pubky: string }[]; me: string }) {
   return (
     <p className="members">
       {parties.map((p, i) => {

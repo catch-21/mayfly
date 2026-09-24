@@ -98,11 +98,40 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
   `decode_record(bytes, name, etag)` → `RecordView` (typ, payload with embedded JWSs unpacked,
   `signature_ok`, `hash_matches_etag`, `hash_matches_name`). All `Serialize`; what a page renders.
 
-## JavaScript (`crates/wasm`, npm name provisional)
+## Browser client (`js/browser`, `@synonymdev/mayfly-browser`)
 
-- `await init()`; then `ChainClient.create(rulesId, store, signer, spec)` /
-  `ChainClient.openUrl(rulesId, store, signer, url)` with `store` and `signer` as plain objects
+- `new MayflyApp({ clientId, testnet?, wasm? })` → `startRingSignIn()`, `qrDataUrl(flow)`,
+  `testnetSignUp(token?)`, `remember(s)`, `restore()`, `forget(s?)`, `party(session)` →
+  `{ me, store, signer }`, `readOnlyStore()`, `isPubky(s)`, `folder`.
+- `new ChainSession({ rules, store, signer, url, wake?, tickMs?, actionTimeoutMs?, autoPass?,
+  holdProposals?, clock? })` → `start()`, `stop()`, `subscribe(fn)`, `state: ChainState`
+  (`phase`, `view`, `arrangement`, `parties`, `myIndex`, `state`, `pending`, `decisions`,
+  `held`, `myTurn`, `awaitingWitnesses`, `busy`, `error`, `lastActions`); `join()`,
+  `propose(body, { hold? })`, `withdraw(body)`, `confirm(h)`, `reject(h)`, `repropose(h)`,
+  `pass()`, `proposeClose("agreed"|"finished")`, `proposeAbandoned([i])`,
+  `confirmAbandoned(h)`, `refresh()`. `pubkyWake(app.pubky)` is the live `wake`.
+- `new ChainReader({ store, registry, url, pollMs? })` → `start()`, `stop()`, `refresh()`,
+  `state: { loaded, error, busy, final }`; `loadChain(store, registry, url)` → `Loaded`
+  (`ref`, `rules`, `rulesKnown`, `view`, `viewError`, `folders`, `files`).
+- `myChains(store, folder)`, `createChain(rules, store, signer, spec)` → invite URL,
+  `parsePubkys(raw, { exclude?, isPubky? })`, `looksLikePubky(s)`.
+- `RulesRegistry(shippedRules(), [modules])` → `resolve(id)`, `has(id)`, `ids()`;
+  `RulesModule` is the JavaScript rules shape; `RulesRef = string | RulesModule`.
+- `loadMayfly(wasm?)`, `shippedRules()`, `parseChainUrl(url)` → `ChainRef` (record links
+  accepted), `isChainUrl`, `verifyFrom(rules, store, url)`, `decodeRecord(bytes, name, etag?)`,
+  `describeError(e)`, `isTransient(e)`, `errorName(e)`.
+- React (`@synonymdev/mayfly-browser/react`): `useSession(app)`, `useRingSignIn(app,
+  onSession)`, `useMyChains(app, party)`, `useCreateChain(party, rules)`,
+  `useChainSession(app, party, url, rules, options?)`, `useChainReader(options)`.
+- `@synonymdev/mayfly-browser/core` is everything above that does not need the Pubky SDK;
+  the Node tests run over it with a memory store.
+
+## Wasm module (`crates/wasm`, `@synonymdev/mayfly`)
+
+- `await init()`; then `ChainClient.create(rules, store, signer, spec)` /
+  `ChainClient.openUrl(rules, store, signer, url)` with `store` and `signer` as plain objects
   (`js/pubky-glue.js`: `storeFromPubky(pubky, session?)`, `signerFromSession(session)`).
+  `rules` is a shipped id (`"list/1"`) or a `RulesModule` object.
 - Methods mirror the Rust client in camelCase: `sync()` → `ChainView`, `join()`, `act()` →
   `ActionView[]` (`kind: "confirmed" | "decision" | "my_turn" | …`), `proposeBody(body)`,
   `confirm(hash)`, `reject`, `repropose`, `pass`, `skip`, `proposeClose("agreed"|"finished")`,
@@ -110,8 +139,9 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
   `view()`, `arrangement()`, `myIndex()`, `setClock(fn)`, `setPolicy({...})`. Hashes are
   base64url strings. Calls on one client are serialised; a second call while one is in
   flight throws `Busy`.
-- Free functions: `verifyFrom(rulesId, store, chainUrl)` → `ChainView`; `decodeRecord(bytes,
-  name, etag?)` → `RecordView`; `parseChainUrl`, `chainUrl`, `designatedProposer`, `rulesIds`.
+- Free functions: `verifyFrom(rules, store, chainUrl)` → `ChainView`; `decodeRecord(bytes,
+  name, etag?)` → `RecordView`; `parseChainUrl`, `chainUrl`, `designatedProposer`, `rulesIds`
+  (the shipped ids only).
 - `KeyedSigner(clientId)`: a self-contained signer for Node and tests.
 - Errors are JS `Error`s with `name` = the client error variant, plus `Busy` and `InvalidInput`.
 

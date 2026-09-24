@@ -15,7 +15,8 @@
     "@synonymdev/mayfly": "file:../../crates/wasm",
     "@synonymdev/pubky": "file:../../../pubky-sdk/bindings/js/pkg",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "@synonymdev/mayfly-browser": "file:../../js/browser"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

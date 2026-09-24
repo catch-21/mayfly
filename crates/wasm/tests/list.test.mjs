@@ -200,6 +200,102 @@ test("a shared list runs on act() alone, through the wasm module", async () => {
   );
 });
 
+/**
+ * Rules supplied by the app as an object, the way an app with rules this module does not
+ * ship runs a chain: `tally/1` counts what each party adds and lets either party close once
+ * the total reaches a target named in genesis options.
+ */
+const tally = {
+  id: "tally/1",
+  referenceHash: "tally/1-reference-hash-for-tests",
+  init(genesis) {
+    const target = genesis.options?.target;
+    if (typeof target !== "number") throw new Error("options.target is required");
+    // `link.author` is a pubky; the state keeps genesis order so `apply` can find the seat.
+    const parties = genesis.parties.map((p) => p.pubky);
+    return { total: 0, by: parties.map(() => 0), parties, target };
+  },
+  mayAppend(state, party, kind) {
+    return kind === "add" && state.total < state.target && party < state.by.length;
+  },
+  apply(state, link) {
+    if (link.kind !== "add") throw new Error(`unknown kind ${link.kind}`);
+    const n = link.body.n;
+    if (!Number.isInteger(n) || n <= 0) throw new Error("n must be a positive integer");
+    const author = state.parties.indexOf(link.author);
+    if (author < 0) throw new Error("author is not a party");
+    const by = [...state.by];
+    by[author] += n;
+    return { ...state, total: state.total + n, by };
+  },
+  status(state) {
+    return state.total >= state.target ? { summary: `reached ${state.total}`, winners: [] } : null;
+  },
+  close(state, close) {
+    if (close.reason === "finished" && state.total < state.target) throw new Error("target not reached");
+    return { summary: `closed at ${state.total}` };
+  },
+};
+
+test("rules supplied as a JavaScript object run a chain and verify it", async () => {
+  const shared = new Shared();
+  const clock = new Clock(1_757_779_812_000);
+  const signers = ["tally.example", "tally.example"].map((app) => new KeyedSigner(app));
+  const stores = signers.map((s) => memoryStore(s.pubky, shared));
+  const pubkies = signers.map((s) => s.pubky);
+
+  const alice = await ChainClient.create(tally, stores[0], signers[0], {
+    parties: pubkies,
+    apps: ["tally.example", "tally.example"],
+    options: { target: 5, time_control: { think_ms: THINK_MS, respond_ms: THINK_MS } },
+  });
+  alice.setClock(clock.reader());
+  const bob = ChainClient.openUrl(tally, stores[1], signers[1], alice.inviteUrl());
+  bob.setClock(clock.reader());
+  await bob.sync();
+  await bob.join();
+  const clients = [alice, bob];
+  const all = [0, 1];
+  await settle(clients, all, clock, 1);
+  assert.equal(alice.view().rules, "tally/1");
+  assert.deepEqual(alice.state(), { total: 0, by: [0, 0], parties: pubkies, target: 5 });
+
+  // The rules refuse what they should, before anything is written.
+  await assert.rejects(alice.proposeBody({ kind: "add", n: 0 }), (e) => e.name === "Rules" && /positive/.test(e.message));
+  await assert.rejects(alice.proposeBody({ kind: "take", n: 1 }), (e) => e.name === "Rules");
+  await assert.rejects(alice.proposeClose("finished"), (e) => e.name === "Rules" && /target/.test(e.message));
+
+  await alice.proposeBody({ kind: "add", n: 2 });
+  await settle(clients, all, clock, 2);
+  await bob.proposeBody({ kind: "add", n: 3 });
+  await settle(clients, all, clock, 3);
+  for (const c of clients) assert.deepEqual(c.state(), { total: 5, by: [2, 3], parties: pubkies, target: 5 });
+  assert.equal(alice.view().status.kind, "ongoing");
+  // At the target `mayAppend` says no, and a finished close is now valid.
+  await assert.rejects(alice.proposeBody({ kind: "add", n: 1 }), (e) => e.name === "Rules");
+  const close = await bob.proposeClose("finished");
+  const asked = await alice.act();
+  assert.equal(asked[0]?.kind, "decision");
+  assert.equal(asked[0]?.candidate.hash, close);
+  await alice.confirm(close);
+  await settle(clients, all, clock, 4);
+  assert.equal(alice.view().is_final, true);
+  assert.equal(alice.view().status.kind, "closed");
+  assert.equal(alice.view().status.outcome, "closed at 5");
+
+  // A bystander verifies with the same rules object; the shipped id is not enough.
+  const observer = memoryStore("", shared);
+  const seen = await verifyFrom(tally, observer, alice.inviteUrl());
+  assert.deepEqual(seen.committed.map((l) => l.hash), alice.view().committed.map((l) => l.hash));
+  assert.deepEqual(seen.state, { total: 5, by: [2, 3], parties: pubkies, target: 5 });
+  await assert.rejects(verifyFrom("tally/1", observer, alice.inviteUrl()), (e) => e.name === "InvalidInput");
+  // A rules object missing a method is refused up front.
+  await assert.rejects(
+    ChainClient.create({ id: "x/1", referenceHash: "h", init() {} }, stores[0], signers[0], { parties: pubkies }),
+    (e) => e.name === "InvalidInput" && /mayAppend/.test(e.message),
+  );
+});
+
 test("errors are JS Errors named after the variant", async () => {
   const shared = new Shared();
   const signer = new KeyedSigner("list.example");

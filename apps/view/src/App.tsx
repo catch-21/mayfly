@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DEFAULT_POLL_MS, describeError, parseChainUrl, type RulesRegistry, type Store } from "@synonymdev/mayfly-browser";
+import { useChainReader } from "@synonymdev/mayfly-browser/react";
 
-import { IS_TESTNET, loadChain, normaliseChainUrl, type Loaded } from "./mayfly";
-import { describeError, formatClock } from "./format";
+import { IS_TESTNET, reader } from "./mayfly";
+import { formatClock } from "./format";
 import { Anomalies } from "./components/Anomalies";
 import { Files, fileKey } from "./components/Files";
 import { Header } from "./components/Header";
 import { RecordPanel } from "./components/RecordPanel";
 import { RulesState } from "./components/RulesState";
 import { Timeline } from "./components/Timeline";
-
-const POLL_MS = 4000;
 
 const EXAMPLES = [
   "pubky://<owner>/pub/<client_id>/mayfly/chains/<CHAIN_ID>/",
@@ -95,83 +95,57 @@ function HowTo() {
 
 export function App() {
   const [url, setUrl] = useState<string>(hashUrl);
-  const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const inFlight = useRef(false);
+  const [pieces, setPieces] = useState<{ store: Store; registry: RulesRegistry }>();
+  const [fatal, setFatal] = useState<string | null>(null);
   const current = useRef(url);
 
-  const refresh = useCallback(async (target: string) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setBusy(true);
-    try {
-      const l = await loadChain(target);
-      // Ignore a result for a chain the user has since navigated away from.
-      if (current.current === target) {
-        setLoaded(l);
-        setError(null);
-      }
-    } catch (e) {
-      if (current.current === target) setError(describeError(e));
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
+  useEffect(() => {
+    reader()
+      .then(setPieces)
+      .catch((e) => setFatal(describeError(e)));
   }, []);
 
   // Open a link: a record URL is cut back to its chain folder so the hash is canonical and
-  // shareable. An unparseable link is kept as typed so `refresh` can show the parse error.
-  const open = useCallback(
-    (next: string) => {
-      let target = next;
-      try {
-        target = normaliseChainUrl(next).url;
-      } catch {
-        // Surfaced inline by refresh.
-      }
-      if (target === current.current) {
-        void refresh(target);
-        return;
-      }
+  // shareable. An unparseable link is shown as such and nothing is fetched.
+  const open = useCallback((next: string) => {
+    let target: string;
+    try {
+      target = parseChainUrl(next).url;
+    } catch (e) {
+      setParseError(describeError(e));
+      return;
+    }
+    setParseError(null);
+    if (target !== current.current) {
       current.current = target;
       setUrl(target);
-      setLoaded(null);
-      setError(null);
       setSelected(null);
-      const hash = `#${target}`;
-      if (window.location.hash !== hash) window.location.hash = hash;
-      void refresh(target);
-    },
-    [refresh],
-  );
+    }
+    const hash = `#${target}`;
+    if (window.location.hash !== hash) window.location.hash = hash;
+  }, []);
 
-  // A link in the hash on first load, and hash changes made in the address bar. Runs once:
-  // `open` and `refresh` read the current target through refs, not through closed-over state.
+  // A link in the hash on first load, and hash changes made in the address bar.
   const openRef = useRef(open);
   openRef.current = open;
   useEffect(() => {
-    if (current.current) void refresh(current.current);
     const onHash = () => {
       const h = hashUrl();
       if (h && h !== current.current) openRef.current(h);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, [refresh]);
+  }, []);
 
-  // Live: poll while the chain is not final, or while there is no view yet (no genesis, a
-  // transient store error). Stop once the verifier says the chain is final.
-  const isFinal = loaded?.view?.is_final ?? false;
-  useEffect(() => {
-    if (!url || isFinal) return;
-    const t = setInterval(() => void refresh(url), POLL_MS);
-    return () => clearInterval(t);
-  }, [url, isFinal, refresh]);
-
+  // Follow the chain: the reader polls while it is open and stops once it is final.
+  const chain = useChainReader(pieces && url ? { store: pieces.store, registry: pieces.registry, url } : undefined);
+  const loaded = chain.loaded;
   const view = loaded?.view ?? null;
   const selectedFile = loaded?.files.find((f) => fileKey(f) === selected) ?? null;
+
+  if (fatal) return <div className="app error">{fatal}</div>;
 
   if (!url) {
     return (
@@ -187,7 +161,8 @@ export function App() {
             it. The viewer fetches every party's and witness's folder, runs the verifier, and
             shows each link with the checks on the bytes behind it. Read-only; no sign-in.
           </p>
-          <LinkForm initial="" onSubmit={open} busy={busy} />
+          <LinkForm initial="" onSubmit={open} busy={chain.busy} />
+          {parseError ? <div className="error">{parseError}</div> : null}
           <p>Accepted forms:</p>
           <ul>
             {EXAMPLES.map((e) => (
@@ -210,28 +185,29 @@ export function App() {
       <div className="topbar">
         <h1>Mayfly chain viewer</h1>
         <span className="flavour">{IS_TESTNET ? "testnet" : "mainnet"}</span>
-        <LinkForm initial={url} onSubmit={open} busy={busy} compact />
+        <LinkForm initial={url} onSubmit={open} busy={chain.busy} compact />
       </div>
 
       <div className="live-bar">
-        {isFinal ? (
+        {chain.final ? (
           <span>
             <span className="badge ok">final</span> chain is final; polling stopped
           </span>
         ) : (
           <span>
             <span className="live-dot" />
-            live: refreshing every {POLL_MS / 1000} s
+            live: refreshing every {DEFAULT_POLL_MS / 1000} s
           </span>
         )}
         {loaded ? <span>last updated {formatClock(loaded.loadedAt)}</span> : null}
-        {busy ? <span className="dim">loading…</span> : null}
-        <button onClick={() => void refresh(url)} disabled={busy}>
+        {chain.busy ? <span className="dim">loading…</span> : null}
+        <button onClick={() => void chain.refresh()} disabled={chain.busy}>
           refresh now
         </button>
       </div>
 
-      {error ? <div className="error">{error}</div> : null}
+      {parseError ? <div className="error">{parseError}</div> : null}
+      {chain.error ? <div className="error">{chain.error}</div> : null}
       {loaded?.viewError ? <div className="error">{loaded.viewError}</div> : null}
       {loaded && loaded.rules && !loaded.rulesKnown ? (
         <div className="notice">
@@ -239,7 +215,7 @@ export function App() {
           verified here. The files the initiator's folder lists are still shown below, decoded.
         </div>
       ) : null}
-      {!loaded && !error ? <p className="dim">Fetching the chain…</p> : null}
+      {!loaded && !chain.error ? <p className="dim">Fetching the chain…</p> : null}
 
       {view ? <Header view={view} rules={loaded?.rules ?? null} /> : null}
       {view ? <Timeline view={view} /> : null}

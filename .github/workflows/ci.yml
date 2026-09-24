@@ -70,6 +70,11 @@ jobs:
       - name: build the SDK's JS package
         run: npx --yes --package wasm-pack -c 'cargo run --bin bundle_npm'
         working-directory: ${{ runner.temp }}/pubky-homeserver/pubky-sdk/bindings/js
+      # The browser client sits between the wasm module and the apps; its tests run the loop
+      # over a memory store in Node.
+      - name: browser client
+        run: npm install && npm run typecheck && npm test
+        working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly/js/browser
       - name: list app
         run: npm install && npm run typecheck && npm run build && npm run build:testnet
         working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly/apps/list

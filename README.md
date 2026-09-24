@@ -40,11 +40,12 @@ README. To watch a chain being built, run [the demo](docs/DEMO.md).
 | `crates/watchman`        | The watchman, and the `mayfly-watchman` service. |
 | `crates/demo`            | A narrated shopping list on a local testnet.     |
 | `crates/wasm`            | The client and verifier for JavaScript.          |
+| `js/browser`             | The browser client a web app drives.             |
 | `apps/list`, `apps/view` | The example web app and its viewer.              |
 
 
-Further applications are their own projects. They depend on these crates; they are not added
-under `apps/`.
+Further applications are their own projects. A web app depends on `js/browser`; a Rust app on
+the crates. They are not added under `apps/`.
 
 ## Further reading
 
@@ -53,7 +54,7 @@ under `apps/`.
 - [The demo](docs/DEMO.md) — the narrated list, and the live explorer.
 - [The watchman service](docs/WATCHMAN.md) — flags, the keypair, health.
 - [Docker](docs/DOCKER.md) — Postgres, the watchman image, the local stack.
-- [JavaScript](docs/JAVASCRIPT.md) — the wasm package and the example web apps.
+- [JavaScript](docs/JAVASCRIPT.md) — the wasm package, the browser client, and the example web apps.
 
 
 
@@ -66,5 +67,5 @@ there on entry.
 
 The shopping list is the only example application in this repository. The shape of an app is
 `crates/client/tests/list.rs`: join from an invite URL, call `act()` on every change, and put
-`Action::Decision`s to the user. In JavaScript the same shape is
-`crates/wasm/tests/list.test.mjs`.
+`Action::Decision`s to the user. In the browser that loop is `@synonymdev/mayfly-browser`
+(`js/browser`); a web app supplies its rules and its screens and nothing else.

@@ -7,7 +7,7 @@ export default defineConfig({
   plugins: [react()],
   optimizeDeps: {
     // Both are local `file:` packages carrying wasm; leave them to the browser as-is.
-    exclude: ["@synonymdev/mayfly", "@synonymdev/pubky"],
+    exclude: ["@synonymdev/mayfly", "@synonymdev/mayfly-browser", "@synonymdev/pubky"],
   },
   build: {
     target: "es2022",

@@ -50,17 +50,3 @@ export function prettyJson(v: unknown): string {
     return String(v);
   }
 }
-
-/** Human-readable message for anything thrown; wasm errors carry their variant in `name`. */
-export function describeError(e: unknown): string {
-  if (e instanceof Error) {
-    const name = e.name && e.name !== "Error" ? `${e.name}: ` : "";
-    return `${name}${e.message}`;
-  }
-  return String(e);
-}
-
-/** The `name` of a thrown JS Error, or `""`. */
-export function errorName(e: unknown): string {
-  return e instanceof Error ? e.name : "";
-}

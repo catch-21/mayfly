@@ -18,8 +18,9 @@ below refer to it. Read the section before touching what it governs.
 | `pubky-mayfly-rules` | The example rules, `list/1`. A future app brings its own `Rules` implementation in its own project. |
 | `pubky-mayfly-client` | `ChainClient`: the app's whole surface. `Store`/`Signer` traits with `MemoryStore`/`LocalSigner` (tests) and `PubkyStore`/`SessionSigner` (Pubky SDK). |
 | `pubky-mayfly-watchman` | `Watchman` (one chain) and `Operator` (many chains, customers, credit). Run it as a service; apps only *name* a watchman in genesis. |
-| `pubky-mayfly-wasm` (`crates/wasm`) | The client, verifier and views for JavaScript, over a `Store` and `Signer` the page supplies; `js/pubky-glue.js` builds both from the SDK. |
-| `apps/list`, `apps/view` | The only example app: the shared shopping list for its members (`src/useList.ts` is the app loop in React; `src/ListPage.tsx` renders actions and decisions) and the read-only chain viewer for anyone (`src/mayfly.ts` is the folder walk). `docs/LIST-APP-TEST-PLAN.md` is the manual test plan they were built against. Read them; do not add the next app beside them. |
+| `pubky-mayfly-wasm` (`crates/wasm`) | The client, verifier and views for JavaScript, over a `Store` and `Signer` the page supplies; `js/pubky-glue.js` builds both from the SDK. Rules are a shipped id or an object the app writes in JavaScript. |
+| `@synonymdev/mayfly-browser` (`js/browser`) | **The client a web app drives.** Sign-in, the `act()` loop, decisions, held proposals, live updates, the home index, a read-only reader; React hooks under `/react`. Start here for a browser app. |
+| `apps/list`, `apps/view` | The only example app: the shared shopping list for its members (`src/useList.ts` names the list's verbs over `useChainSession`; `src/ListPage.tsx` renders the phases and decisions) and the read-only chain viewer for anyone (over `useChainReader`). `docs/LIST-APP-TEST-PLAN.md` is the manual test plan they were built against. Read them; do not add the next app beside them. |
 | `mayfly-demo` (`crates/demo`) | A narrated Rust walkthrough on a testnet: `src/main.rs` drives `ChainClient` and a watchman through the happy and sad paths; `src/explorer.rs` renders a chain for a bystander. Read it for the protocol, not for app structure. |
 
 Full API cheat‑sheet: [reference.md](reference.md).
@@ -71,11 +72,18 @@ attributed evidence, never something to hide.
 
 ## Writing a rules module
 
-Implement `pubky_mayfly::rules::Rules` in the app's own project, with an id `<name>/1`.
-`list/1` (`crates/rules/src/list.rs`) is the example to read. The Rust client takes the rules
-as a type parameter, so a separate project depends on `pubky-mayfly` and supplies its own.
-The wasm package ships `list/1` only (`AnyRules`); an app with new rules that wants the
-browser client builds its own wasm module rather than extending this one.
+Rules live in the app's own project, with an id `<name>/1`. Two ways to write them:
+
+- **In Rust**, implement `pubky_mayfly::rules::Rules`; `list/1` (`crates/rules/src/list.rs`)
+  is the example. The Rust client takes the rules as a type parameter, so a separate project
+  depends on `pubky-mayfly` and supplies its own. The wasm package ships `list/1` only.
+- **In JavaScript**, write a `RulesModule` object (`js/browser/src/rules.ts`): `id`,
+  `referenceHash`, `init`, `mayAppend`, `apply`, `close`, and optionally `wantsReveals`,
+  `obliged`, `status`, `canonicalState`. Pass it wherever a rules id is accepted; no wasm
+  rebuild. `crates/wasm/tests/list.test.mjs` runs a `tally/1` written this way. `link.author`
+  is a pubky, so `init` keeps `genesis.parties` in the state to find a seat.
+
+Either way:
 
 - `type Body`: an enum with `#[serde(tag = "kind", rename_all = "snake_case")]`. The tag
   becomes the link's `kind`; `propose_body` relies on it.
@@ -97,63 +105,75 @@ Test rules two ways: unit tests on `apply` alone, and a flow over `MemoryStore` 
 
 ## Building a web app
 
-The shopping list is the only app in this repository. The next app is its own project: depend
-on these crates (and, for a browser, on a wasm build), and read `apps/list` and `apps/view`
-for the loop. Do not add it under `apps/`.
+The shopping list is the only app in this repository. The next app is its own project that
+depends on `@synonymdev/mayfly-browser` (and, for Rust rules, on a wasm build). Read
+`apps/list` and `apps/view` for the shape. Do not add it under `apps/`.
+
+Use the browser client; do not drive the wasm `ChainClient` from a page yourself. The client
+is where the first web app's mistakes were fixed, and a page that bypasses it makes them
+again. What it gives you (`js/browser/README.md` has the table):
+
+- **`MayflyApp`**: one app on one network. Ring sign-in as a QR, the testnet shortcut,
+  remember/restore/forget, `party(session)` → the store and signer, `readOnlyStore()`.
+- **`ChainSession`** (`useChainSession` in React): `phase` (`loading`, `stranger`,
+  `invited`, `waiting`, `open`, `ended`), `parties` and `arrangement` before commit, `state`,
+  `pending` (live round only), `decisions`, `held`, `busy`, `error`; `join`, `propose`,
+  `confirm`, `reject`, `repropose`, `pass`, `proposeClose`, `proposeAbandoned`.
+- **`ChainReader`** (`useChainReader`): the folder walk, the verifier, decoded files, polling
+  that stops when the chain is final. A `RulesRegistry` says which rules it can run.
+- **`myChains`, `createChain`, `parsePubkys`**: the home screen.
+
+Your page owns: the rules and their types, the screens for each `phase`, how a decision card
+reads, and what a proposal form is. `propose(body)` is held by default until the round takes
+it; pass `{ hold: false }` for actions on the current state (a tick, an edit) that should
+not wait. Set `autoPass: false` for rules where a round of yours is a move to make.
 
 - **Dependencies.** `@synonymdev/pubky` (the SDK's `bindings/js/pkg`, built with its
-  `npm run build`) and `@synonymdev/mayfly` (`crates/wasm`, built with `npm run build`) are
-  `file:` dependencies until published. Rebuild the wasm package after any Rust change or the
-  page runs stale code. Two build flavours: mainnet, and `build:testnet` served under
-  `/testnet/` against the local homeserver (`docker compose up` at the repo root).
-- **Sign in** is a Pubky Ring grant flow; the grant's client key signs every record (§5).
-  `js/pubky-glue.js` turns a session into the `store` and `signer` the client wants.
-  `KeyedSigner` is for Node and tests, not the browser.
-- **Home is the index markers.** Your lists come from your own homeserver: `index/active/<id>`
-  and `index/finished/<id>`, which the client writes and moves (§7). List finished first, then
-  active, and dedupe by URL — `sync` deletes `active` when the chain is final even if this
-  session never wrote it.
-- **Connections are scarce.** A browser allows about six to one host, and each live event
-  stream holds one. Subscribe to the other members' folders, never your own. If a subscribe
-  resolves after the page has left the chain, cancel its reader. A user action that gets no
-  answer in about twenty seconds should release the form and say so; the in‑flight SDK call
-  cannot be cancelled.
+  `npm run build`), `@synonymdev/mayfly` (`crates/wasm`, `npm run build`) and
+  `@synonymdev/mayfly-browser` (`js/browser`, `npm run build`) are `file:` dependencies until
+  published. Rebuild after a change in any of them or the page runs stale code. Pass the wasm
+  URL to `MayflyApp` (Vite: `?url` import). Two build flavours: mainnet, and `build:testnet`
+  served under `/testnet/` against the local homeserver (`docker compose up`).
 - **Errors carry the variant name.** `error.name` is the client error (`Oversize`,
   `AlreadyVoted`, …) plus `Busy` and `InvalidInput`. Match on the name, not the message.
 
-## Rules of the loop that the list got wrong first
+## What the client does for you, and why
+
+These are the rules of the loop the list got wrong first. The client now holds them; read
+them so your screens do not fight it. `js/browser/tests/session.test.mjs` pins each one.
 
 **Genesis is not the chain yet.** With more than one party, genesis stays uncommitted until
-the others `join()`. `state()` is `None`, `verdict().committed` is empty, and `propose_body`
-refuses. Show the terms from `arrangement()` (parties, quorum, witnesses, rules) — that is
-what exists before commit. `verdict().seats` can already contain the creator, so an empty
-seat list is the wrong "nobody has joined" test. Validate the member field before writing:
-drop self and blanks, refuse a pubky that is not z32, and refuse a duplicate rather than
-merging it silently — genesis will refuse the duplicate anyway, later and less helpfully.
+the others `join()`. `state` is `undefined`, `view.parties` is empty, and a proposal is
+refused. `phase` is `invited` or `waiting`, and `parties` come from the `arrangement`. The
+creator can already be a seat, so an empty seat list is the wrong "nobody has joined" test.
+`parsePubkys` refuses a repeat or a non-pubky by name before genesis is written.
 
 **A refused agreed close is consent withheld.** It is not `AnomalyKind::Obstruction` (§6.8).
 Obstruction is refusing the sole valid proposal in a round. Refusing one of two competing
 proposals is allowed. Refusing a finished or abandoned close still is obstruction. After the
 refusal the designated proposer of the next round gets the card: put that close forward
-again, or let it go. If they have already composed a new rules proposal, propose that instead
-and do not show the card. An unanswered card blocks only that person's turn. When the
-app's purpose is the agreement itself, that card is the feature, so design it first.
+again, or let it go — that can be the person who refused it. A held proposal is the third
+answer and the card is not shown. An unanswered card blocks only that person's turn. When
+the app's purpose is the agreement itself, that card is the feature, so design it first.
 
 **`open.round` is the dead round while `open.dead` is true.** `Decision.round` and
-`MyTurn.round` are the next round. Matching "has this person voted?" against `open.round`
-hides the card, because their vote in the dead round looks like a vote in the new one.
-Pending UI should list candidates of the live round only; a dead close is not still "1 of 2".
+`MyTurn.round` are the next round. The client matches "has this person voted?" against the
+decision's round, and `pending` lists the live round only; a dead close is not still "1 of 2".
 
-**Retry a proposal the round is not ready for.** `AlreadyVoted`, `RoundDead`,
-`NotDesignated`, `Busy` and `AwaitingWitnesses` are transient, not errors to show. Hold the
-user's proposal and try it on every `act()` tick, not only when the action list says
-`my_turn`: the next round may belong to someone else, and waiting for your own turn drops the
-proposal. Show it as waiting. Clear the queue when the page moves to another chain.
+**A proposal the round is not ready for waits.** `AlreadyVoted`, `RoundDead`,
+`NotDesignated`, `Busy` and `AwaitingWitnesses` mean "not yet". A held proposal is retried on
+every tick, whichever member the round belongs to. A user's click waits for the loop rather
+than racing it into `Busy`. The loop never clears an error about the person's own action.
 
 **Records over `max_body_bytes` are invalid before parsing** (default 65,536, §6.6). The
 client returns `Oversize` and writes nothing; the fold drops them too. Tell the user how big
 the record was and what the chain allows. Do not raise the limit to make a body fit; make the
 body smaller or split it across links.
+
+**Competing proposals converge without anyone.** Two members proposing at once kill the
+round; the next designated proposer carries the lowest-hash link forward inside `act()`. The
+other proposal is not re-proposed for its author; the person adds it again if they still
+want it.
 
 **Anomalies are attributed evidence.** Show every anomaly with an `against`. An unattributed
 `UnconfirmedProposal` is only the chain still being confirmed — a member app may hide it, a
@@ -166,8 +186,14 @@ receipts are signed by the kid. One receipt decides nothing: with two engaged wi
 single outage leaves every time question asserted; three adjudicate through one. A minority
 clock, however far off, does not decide. `receipt.consistent` is not a validity condition.
 
-**The viewer is `verifyFrom`, not a second client.** It has no seat and does not vote. Poll
-while the chain is open; stop when it is final, including after a refresh.
+**Connections are scarce.** A browser allows about six to one host, and each live event
+stream holds one. The client subscribes to the other members' folders, never mine, and
+closes them when the seats change or the page leaves. A user action with no answer in twenty
+seconds gives the form back and says so.
+
+**The reader is `verifyFrom`, not a second client.** It has no seat and does not vote. It
+polls while the chain is open and stops when it is final, including after a refresh. Home is
+the index markers: `index/finished` before `index/active`, deduplicated by URL.
 
 ## Testing an app by hand
 

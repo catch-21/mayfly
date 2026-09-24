@@ -1,43 +1,24 @@
-import { useEffect, useState } from "react";
-import QRCode from "qrcode";
-import type { GrantAuthFlow, Session } from "@synonymdev/pubky";
+import { useState } from "react";
+import type { Session } from "@synonymdev/pubky";
+import { describeError } from "@synonymdev/mayfly-browser";
+import { useRingSignIn } from "@synonymdev/mayfly-browser/react";
 
-import { TESTNET, startRingSignIn, testnetSignUp } from "./pubky";
+import { TESTNET, app } from "./config";
 
 export function SignIn({ onSession }: { onSession: (s: Session) => void }) {
-  const [flow, setFlow] = useState<GrantAuthFlow>();
-  const [qr, setQr] = useState<string>();
-  const [error, setError] = useState<string>();
+  // The Ring flow starts on mount; the QR is the whole sign-in for a real user.
+  const ring = useRingSignIn(app, onSession);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
-
-  // Start the Ring flow on mount; the QR is the whole sign-in for a real user.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const f = await startRingSignIn();
-        if (cancelled) return;
-        setFlow(f);
-        setQr(await QRCode.toDataURL(f.authorizationUrl, { margin: 1, width: 240 }));
-        const session = await f.awaitApproval();
-        if (!cancelled) onSession(session);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [onSession]);
+  const [error, setError] = useState<string>();
 
   const shortcut = async () => {
     setBusy(true);
     setError(undefined);
     try {
-      onSession(await testnetSignUp(token.trim() || undefined));
+      onSession(await app.testnetSignUp(token.trim() || undefined));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeError(e));
     } finally {
       setBusy(false);
     }
@@ -52,12 +33,12 @@ export function SignIn({ onSession }: { onSession: (s: Session) => void }) {
       </p>
       <section className="card">
         <h2>Sign in with Pubky Ring</h2>
-        {qr ? (
+        {ring.qr ? (
           <>
-            <img className="qr" src={qr} alt="Scan with Pubky Ring to sign in" />
+            <img className="qr" src={ring.qr} alt="Scan with Pubky Ring to sign in" />
             <p className="dim">
               Scan with Pubky Ring, or open the link on this device:{" "}
-              <a href={flow?.authorizationUrl}>pubkyauth link</a>
+              <a href={ring.flow?.authorizationUrl}>pubkyauth link</a>
             </p>
           </>
         ) : (
@@ -83,7 +64,7 @@ export function SignIn({ onSession }: { onSession: (s: Session) => void }) {
           </div>
         </section>
       )}
-      {error && <p className="error">{error}</p>}
+      {(error ?? ring.error) && <p className="error">{error ?? ring.error}</p>}
     </main>
   );
 }

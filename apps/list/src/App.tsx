@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
-import type { Session } from "@synonymdev/pubky";
+import { useEffect, useState } from "react";
+import { useSession } from "@synonymdev/mayfly-browser/react";
 
 import { Home } from "./Home";
 import { ListPage } from "./ListPage";
 import { SignIn } from "./SignIn";
-import { loadMayfly } from "./mayfly";
-import { TESTNET, forget, remember, restore } from "./pubky";
+import { TESTNET, app } from "./config";
 import { short } from "./format";
 
 /** The open list lives in the hash, so a list link survives a reload and can be shared. */
@@ -15,22 +14,13 @@ function listFromHash(): string | undefined {
 }
 
 export function App() {
-  const [session, setSession] = useState<Session | null>();
+  const { session, party, error, signIn, signOut } = useSession(app);
   const [url, setUrl] = useState<string | undefined>(listFromHash);
-  const [fatal, setFatal] = useState<string>();
 
   useEffect(() => {
-    Promise.all([loadMayfly(), restore()])
-      .then(([, s]) => setSession(s ?? null))
-      .catch((e) => setFatal(e instanceof Error ? e.message : String(e)));
     const onHash = () => setUrl(listFromHash());
     addEventListener("hashchange", onHash);
     return () => removeEventListener("hashchange", onHash);
-  }, []);
-
-  const onSession = useCallback(async (s: Session) => {
-    setSession(s);
-    await remember(s);
   }, []);
 
   const open = (u: string) => {
@@ -41,28 +31,25 @@ export function App() {
     history.pushState(null, "", location.pathname);
     setUrl(undefined);
   };
-  const signOut = async () => {
-    await forget(session ?? undefined);
-    setSession(null);
-  };
 
-  if (fatal) return <main className="narrow error">{fatal}</main>;
+  if (error) return <main className="narrow error">{error}</main>;
   if (session === undefined) return <main className="narrow dim">Loading…</main>;
-  if (!session) return <SignIn onSession={onSession} />;
+  if (!session) return <SignIn onSession={signIn} />;
+  if (!party) return <main className="narrow dim">Preparing your signing key…</main>;
 
   return (
     <>
       <nav className="top">
         <span className="brand">Mayfly list{TESTNET ? " · testnet" : ""}</span>
         <span className="grow" />
-        <span className="mono dim" title={session.info.publicKey.z32()}>
-          {short(session.info.publicKey.z32())}
+        <span className="mono dim" title={party.me}>
+          {short(party.me)}
         </span>
-        <button className="small ghost" onClick={signOut}>
+        <button className="small ghost" onClick={() => void signOut()}>
           sign out
         </button>
       </nav>
-      {url ? <ListPage session={session} url={url} onBack={back} /> : <Home session={session} onOpen={open} />}
+      {url ? <ListPage party={party} url={url} onBack={back} /> : <Home party={party} onOpen={open} />}
     </>
   );
 }

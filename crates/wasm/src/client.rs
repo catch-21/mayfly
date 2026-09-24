@@ -32,14 +32,19 @@ use crate::store::JsStore;
 
 type Inner = pubky_mayfly_client::ChainClient<AnyRules, JsStore, JsSigner>;
 
-/// Rules by id, or an `InvalidInput` error naming what is accepted.
-fn rules(id: &str) -> Result<AnyRules, JsValue> {
-    AnyRules::by_id(id).ok_or_else(|| {
-        input(format!(
-            "unknown rules {id:?}; this build knows {}",
-            AnyRules::IDS.join(", ")
-        ))
-    })
+/// Rules from what the caller passed: a shipped rules id (`"list/1"`), or a rules object
+/// (see [`crate::jsrules`]). Anything else is an `InvalidInput` error naming what is
+/// accepted.
+fn rules(v: JsValue) -> Result<AnyRules, JsValue> {
+    if let Some(id) = v.as_string() {
+        return AnyRules::by_id(&id).ok_or_else(|| {
+            input(format!(
+                "unknown rules {id:?}; this build ships {}; pass a rules object for others",
+                AnyRules::IDS.join(", ")
+            ))
+        });
+    }
+    crate::jsrules::JsRules::new(v).map(AnyRules::Js)
 }
 
 fn hash(s: &str) -> Result<Hash, JsValue> {
@@ -105,15 +110,15 @@ impl ChainClient {
 impl ChainClient {
     /// Write genesis as `spec.parties[0]` and return the initiator's client (§8.1).
     ///
-    /// `spec`: `{ parties, apps?, confirmQuorum?, witnesses?, recoveryDelayMs?, maxBodyBytes?,
-    /// options? }`.
+    /// `rules`: a shipped rules id (`"list/1"`) or a rules object. `spec`: `{ parties, apps?,
+    /// confirmQuorum?, witnesses?, recoveryDelayMs?, maxBodyBytes?, options? }`.
     pub async fn create(
-        rules_id: String,
+        rules: JsValue,
         store: JsValue,
         signer: JsValue,
         spec: JsValue,
     ) -> Result<ChainClient, JsValue> {
-        let rules = rules(&rules_id)?;
+        let rules = self::rules(rules)?;
         let store = JsStore::new(store)?;
         let signer = JsSigner::new(signer)?;
         let input: SpecInput = from_js(spec, "spec")?;
@@ -141,14 +146,15 @@ impl ChainClient {
 
     /// A client for an existing chain from its URL
     /// (`pubky://<owner>/pub/<client_id>/mayfly/chains/<id>/`). Reads nothing until `sync`.
+    /// `rules` is a shipped rules id or a rules object.
     #[wasm_bindgen(js_name = "openUrl")]
     pub fn open_url(
-        rules_id: String,
+        rules: JsValue,
         store: JsValue,
         signer: JsValue,
         url: String,
     ) -> Result<ChainClient, JsValue> {
-        let rules = rules(&rules_id)?;
+        let rules = self::rules(rules)?;
         let store = JsStore::new(store)?;
         let signer = JsSigner::new(signer)?;
         let inner = Inner::open_url(rules, store, signer, &url).map_err(js)?;
@@ -417,13 +423,14 @@ impl ChainClient {
 }
 
 /// Verify a chain from files alone, as anyone: no seat, no signer. `store.me` may be `""`.
+/// `rules` is a shipped rules id or a rules object.
 #[wasm_bindgen(js_name = "verifyFrom")]
 pub async fn verify_from_url(
-    rules_id: String,
+    rules: JsValue,
     store: JsValue,
     chain_url: String,
 ) -> Result<JsValue, JsValue> {
-    let rules = rules(&rules_id)?;
+    let rules = self::rules(rules)?;
     let store = JsStore::new(store)?;
     let (chain, initiator) = parse_chain_url(&chain_url).map_err(js)?;
     let report = verify_from(&rules, &store, &chain, initiator)
@@ -466,7 +473,7 @@ pub fn chain_url_js(owner: String, folder: String, chain: String) -> Result<Stri
     Ok(format!("pubky://{owner}{}", folder.chain(&id).as_str()))
 }
 
-/// The rules ids this build knows.
+/// The rules ids this build ships. Other rules are passed as objects.
 #[wasm_bindgen(js_name = "rulesIds")]
 pub fn rules_ids() -> Vec<String> {
     AnyRules::IDS.iter().map(|s| s.to_string()).collect()

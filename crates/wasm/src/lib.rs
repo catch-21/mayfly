@@ -10,10 +10,13 @@
 //! - `ChainClient` — `create`, `openUrl`, `sync`, `join`, `act`, `proposeBody`, `confirm`,
 //!   `reject`, `repropose`, `pass`, `skip`, `proposeClose`, `proposeAbandoned`,
 //!   `confirmAbandoned`, `proposeReveal`, `mirror`, `waitForChange`, `state`, `view`, …
-//! - `verifyFrom(rulesId, store, chainUrl)` — the chain view as a bystander sees it.
+//! - `verifyFrom(rules, store, chainUrl)` — the chain view as a bystander sees it.
 //! - `decodeRecord(bytes, name, etag?)` — one file for the evidence panel.
 //! - `parseChainUrl`, `chainUrl`, `rulesIds`.
 //! - `KeyedSigner` — a self-contained signer for Node apps and tests.
+//!
+//! `rules` is either a shipped rules id (`"list/1"`) or a rules object the app supplies
+//! ([`jsrules`]), so an app with its own rules needs no rebuild of this module.
 //!
 //! The native build of this crate exists so the workspace's tests and clippy cover the
 //! rules adapter; the JS-facing modules compile for `wasm32` only.
@@ -26,6 +29,8 @@ pub mod rules;
 
 #[cfg(target_arch = "wasm32")]
 pub mod client;
+#[cfg(target_arch = "wasm32")]
+pub mod jsrules;
 #[cfg(target_arch = "wasm32")]
 pub mod signer;
 #[cfg(target_arch = "wasm32")]

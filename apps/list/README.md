@@ -13,10 +13,15 @@ npm run build:testnet     # local testnet flavour → dist/testnet/, served unde
 npm run dev               # Vite dev server (mainnet flavour; VITE_TESTNET=true npm run dev for testnet)
 ```
 
-Both `@synonymdev/pubky` and `@synonymdev/mayfly` are `file:` dependencies on the sibling
-checkouts (`pubky-sdk/bindings/js/pkg`, built with its `npm run build`, and `crates/wasm`,
-built with `npm run build`) until they are published: the SDK's `signJws` is on the fork
-branch only.
+`@synonymdev/pubky`, `@synonymdev/mayfly` and `@synonymdev/mayfly-browser` are `file:`
+dependencies on the sibling checkouts (`pubky-sdk/bindings/js/pkg`, `crates/wasm` and
+`js/browser`, each built with its `npm run build`) until they are published: the SDK's
+`signJws` is on the fork branch only.
+
+The app is thin on purpose. `src/config.ts` names the app, the network and the `list/1`
+types; `src/useList.ts` puts the list's verbs (add, edit, tick, remove, archive, close) over
+the browser client's `useChainSession`; the rest is screens. Everything Pubky and Mayfly —
+sign-in, the loop, decisions, held proposals, live updates, the home index — is the client's.
 
 ## Configuration (build time)
 
@@ -52,5 +57,6 @@ branch only.
 - Anything the verifier attributes to a member — a tampered mirror, an equivocation — is
   listed at the bottom, with the viewer for the evidence.
 
-The loop is the one from `crates/client/tests/list.rs`: `act()` after every action, on a
-three-second timer, and whenever a member's homeserver reports a change on its event stream.
+The loop is the one from `crates/client/tests/list.rs`, run by `@synonymdev/mayfly-browser`:
+`act()` after every action, on a three-second timer, and whenever a member's homeserver
+reports a change on its event stream. `js/browser/tests/session.test.mjs` pins it.

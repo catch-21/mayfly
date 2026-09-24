@@ -1,79 +1,38 @@
-import { useEffect, useState } from "react";
-import { PublicKey, type Session } from "@synonymdev/pubky";
+import { useState } from "react";
+import { describeError, parseChainUrl, parsePubkys, type Party } from "@synonymdev/mayfly-browser";
+import { useCreateChain, useMyChains } from "@synonymdev/mayfly-browser/react";
 
+import { RULES, app } from "./config";
 import { copy, short } from "./format";
-import { parseChainUrl } from "./mayfly";
-import { createList, myLists } from "./useList";
 
-/**
- * The other members, from the textarea: split on whitespace and commas, drop the creator's
- * own pubky, and refuse a repeated pubky or anything that is not a pubky before a chain is
- * written.
- */
-export function parseMembers(raw: string, me: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const piece of raw.split(/[\s,]+/)) {
-    const p = piece.trim();
-    if (!p || p === me) continue;
-    if (seen.has(p)) throw new Error(`"${p}" is listed more than once`);
-    try {
-      PublicKey.from(p);
-    } catch {
-      throw new Error(`"${p}" is not a pubky`);
-    }
-    seen.add(p);
-    out.push(p);
-  }
-  return out;
-}
-
-function parseWatchman(raw: string, me: string): string[] {
-  const w = raw.trim();
-  if (!w) return [];
-  if (w === me) throw new Error("you cannot be your own watchman");
-  try {
-    PublicKey.from(w);
-  } catch {
-    throw new Error(`watchman "${w}" is not a pubky`);
-  }
-  return [w];
-}
-
-export function Home({ session, onOpen }: { session: Session; onOpen: (url: string) => void }) {
-  const me = session.info.publicKey.z32();
-  const [lists, setLists] = useState<{ url: string; finished: boolean }[]>();
+export function Home({ party, onOpen }: { party: Party; onOpen: (url: string) => void }) {
+  const me = party.me;
+  const lists = useMyChains(app, party);
+  const creating = useCreateChain(party, RULES);
   const [members, setMembers] = useState("");
   const [witness, setWitness] = useState("");
   const [invite, setInvite] = useState("");
   const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    myLists(session)
-      .then(setLists)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [session]);
-
   const create = async () => {
-    setBusy(true);
     setError(undefined);
     try {
-      const others = parseMembers(members, me);
+      // Blanks and my own pubky are dropped; a repeat or a non-pubky is refused by name, before
+      // a chain is written.
+      const others = parsePubkys(members, { exclude: me, isPubky: (s) => app.isPubky(s) });
       if (others.length === 0) throw new Error("name at least one other member by pubky");
-      const url = await createList(session, others, parseWatchman(witness, me));
-      onOpen(url);
+      const watchmen = parsePubkys(witness, { isPubky: (s) => app.isPubky(s) });
+      if (watchmen.includes(me)) throw new Error("you cannot be your own watchman");
+      onOpen(await creating.create({ parties: [me, ...others], witnesses: watchmen }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
+      setError(describeError(e));
     }
   };
 
   const open = () => {
     try {
-      parseChainUrl(invite.trim());
+      parseChainUrl(invite);
       onOpen(invite.trim());
     } catch {
       setError("that is not a list link; it looks like pubky://<owner>/pub/<app>/mayfly/chains/<id>/");
@@ -101,13 +60,13 @@ export function Home({ session, onOpen }: { session: Session; onOpen: (url: stri
 
       <section className="card">
         <h2>Your lists</h2>
-        {!lists ? (
-          <p className="dim">Reading your homeserver…</p>
-        ) : lists.length === 0 ? (
+        {!lists.chains ? (
+          <p className="dim">{lists.error ?? "Reading your homeserver…"}</p>
+        ) : lists.chains.length === 0 ? (
           <p className="dim">None yet. Create one below, or open a link someone sent you.</p>
         ) : (
           <ul className="lists">
-            {lists.map((l) => {
+            {lists.chains.map((l) => {
               const ref = parseChainUrl(l.url);
               return (
                 <li key={l.url}>
@@ -138,8 +97,8 @@ export function Home({ session, onOpen }: { session: Session; onOpen: (url: stri
         <p className="dim">
           Every member must confirm each change (unanimity). You will be the first member.
         </p>
-        <button onClick={create} disabled={busy}>
-          {busy ? "Creating…" : "Create list"}
+        <button onClick={create} disabled={creating.busy}>
+          {creating.busy ? "Creating…" : "Create list"}
         </button>
       </section>
 

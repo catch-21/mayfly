@@ -7,8 +7,11 @@ to cross into this module (spec §16.2.1).
 
 ```
 npm run build     # wasm-pack → pkg/ (needs the wasm32-unknown-unknown target; wasm-pack via npx)
-npm test          # node --test: the shared-list flow over an in-memory store, and error shapes
+npm test          # node --test: the shared-list flow, a JavaScript rules module, and error shapes
 ```
+
+A web app does not usually drive this module directly: `@synonymdev/mayfly-browser`
+(`js/browser`) is the client a page uses, and it sits on top of this one.
 
 ## Use
 
@@ -50,5 +53,28 @@ The store and signer shapes are in `js/pubky-glue.d.ts`; `js/pubky-glue.js` buil
 SDK `Pubky` and `Session`. `KeyedSigner` is a self-contained signer for Node apps and tests.
 Hashes are unpadded base64url strings; errors are JS `Error`s whose `name` is the client
 error variant (`AlreadyVoted`, `NoSuchCandidate`, `RoundDead`, `Busy`, `InvalidInput`, …).
+
+## Your own rules
+
+Wherever a rules id is accepted, an object is too (`src/jsrules.rs`):
+
+```js
+const tally = {
+  id: "tally/1",
+  referenceHash: "tally/1-reference-hash",
+  init(genesis) { return { total: 0, parties: genesis.parties.map((p) => p.pubky) }; },
+  mayAppend(state, party, kind) { return kind === "add"; },
+  apply(state, link) { return { ...state, total: state.total + link.body.n }; },   // throw to refuse
+  close(state, close) { return { summary: `closed at ${state.total}` }; },
+  // optional: wantsReveals(genesis), obliged(state), status(state), canonicalState(state)
+};
+const alice = await ChainClient.create(tally, store, signer, { parties });
+const seen = await verifyFrom(tally, readOnlyStore, invite);
+```
+
+Every method is synchronous and must be a pure function of its arguments; the verifier runs
+`apply` on every party's machine and expects identical `canonicalState` bytes (default: JSON
+with sorted keys). `link.author` is a pubky; keep `genesis.parties` in the state to find a
+seat. `tests/list.test.mjs` runs this `tally/1` end to end.
 
 The package name is provisional until the npm organisation is confirmed.
