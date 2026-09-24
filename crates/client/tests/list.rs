@@ -313,3 +313,231 @@ async fn an_oversized_item_is_refused_before_it_is_written() {
     assert_eq!(clients[1].verdict().unwrap().committed.len(), 1);
     assert!(items(&clients[1]).is_empty());
 }
+
+/// Two members on one in-memory homeserver, genesis committed.
+async fn two_members() -> (Vec<Client>, Clock) {
+    let shared = MemoryStore::shared();
+    let clock = Clock(Arc::new(AtomicU64::new(NOW_S * 1000)));
+    let parties = [
+        party(&shared, "list.example"),
+        party(&shared, "list.example"),
+    ];
+    let pubkies: Vec<String> = parties.iter().map(|(s, _)| s.pubky()).collect();
+    let spec = GenesisSpec::new(pubkies).with_apps(&["list.example", "list.example"]);
+    let alice = ChainClient::create(List, parties[0].1.clone(), parties[0].0.clone(), spec)
+        .await
+        .unwrap()
+        .with_clock(clock.reader());
+    let invite = alice.invite_url();
+    let mut bob = ChainClient::open_url(List, parties[1].1.clone(), parties[1].0.clone(), &invite)
+        .unwrap()
+        .with_clock(clock.reader());
+    bob.sync().await.unwrap();
+    bob.join().await.unwrap();
+    let mut clients = vec![alice, bob];
+    settle(&mut clients, &[0, 1], &clock, 1).await;
+    (clients, clock)
+}
+
+/// Before the other member joins, genesis is not committed: the creator can read the
+/// arrangement, and cannot append.
+#[tokio::test]
+async fn the_list_is_not_usable_until_everyone_has_joined() {
+    let shared = MemoryStore::shared();
+    let clock = Clock(Arc::new(AtomicU64::new(NOW_S * 1000)));
+    let parties = [
+        party(&shared, "list.example"),
+        party(&shared, "list.example"),
+    ];
+    let pubkies: Vec<String> = parties.iter().map(|(s, _)| s.pubky()).collect();
+    let spec = GenesisSpec::new(pubkies).with_apps(&["list.example", "list.example"]);
+    let mut alice = ChainClient::create(List, parties[0].1.clone(), parties[0].0.clone(), spec)
+        .await
+        .unwrap()
+        .with_clock(clock.reader());
+    alice.sync().await.unwrap();
+    let arrangement = alice.arrangement().unwrap();
+    assert_eq!(arrangement.parties.len(), 2);
+    assert!(
+        alice.verdict().unwrap().committed.is_empty(),
+        "genesis is not committed until the other member confirms it"
+    );
+    let err = alice
+        .propose_body(&Body::Add {
+            id: "milk".into(),
+            text: "Milk".into(),
+            qty: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        alice.state().unwrap().is_none(),
+        "an add before everyone has joined does not create a list: {err}"
+    );
+}
+
+/// An edit through the client keeps the item's id, its place, and its tick.
+#[tokio::test]
+async fn an_edit_keeps_the_id_the_place_and_the_tick() {
+    let (mut clients, clock) = two_members().await;
+    clients[0]
+        .propose_body(&Body::Add {
+            id: "milk".into(),
+            text: "Milk".into(),
+            qty: None,
+        })
+        .await
+        .unwrap();
+    settle(&mut clients, &[0, 1], &clock, 2).await;
+    clients[1]
+        .propose_body(&Body::Tick { id: "milk".into() })
+        .await
+        .unwrap();
+    settle(&mut clients, &[0, 1], &clock, 3).await;
+    clients[0]
+        .propose_body(&Body::Edit {
+            id: "milk".into(),
+            text: Some("Oat milk".into()),
+            qty: None,
+        })
+        .await
+        .unwrap();
+    settle(&mut clients, &[0, 1], &clock, 4).await;
+    for c in &clients {
+        let items = c.state().unwrap().unwrap().items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "milk");
+        assert_eq!(items[0].text, "Oat milk");
+        assert!(items[0].ticked);
+    }
+}
+
+/// Refusing an agreed close is a decision, not a silent confirm. The next add then commits,
+/// the chain stays open, and the fold does not call it obstruction.
+#[tokio::test]
+async fn a_refused_agreed_close_is_followed_by_an_add() {
+    let (mut clients, clock) = two_members().await;
+    clients[0]
+        .propose_body(&Body::Add {
+            id: "apples".into(),
+            text: "Apples".into(),
+            qty: None,
+        })
+        .await
+        .unwrap();
+    settle(&mut clients, &[0, 1], &clock, 2).await;
+    let close = clients[0].propose_close(CloseReason::Agreed).await.unwrap();
+    clients[1].sync().await.unwrap();
+    let asked = clients[1].act().await.unwrap();
+    assert!(
+        matches!(
+            asked.as_slice(),
+            [Action::Decision { candidate, repropose: false, .. }] if candidate.hash == close
+        ),
+        "a close is a decision, not an automatic confirm: {asked:?}"
+    );
+    clients[1].reject(close).await.unwrap();
+    clients[0].sync().await.unwrap();
+    clients[1].sync().await.unwrap();
+
+    // The designated proposer of the next round is asked to put the close forward again or
+    // let it go. Proposing the add is the third answer, and it is legal only for them.
+    let mut proposed = None;
+    for c in clients.iter_mut() {
+        let actions = c.act().await.unwrap();
+        let mine = actions.iter().any(|a| {
+            matches!(a, Action::Decision { repropose: true, candidate, .. } if candidate.hash == close)
+        });
+        if mine {
+            proposed = Some(
+                c.propose_body(&Body::Add {
+                    id: "pears".into(),
+                    text: "Pears".into(),
+                    qty: None,
+                })
+                .await
+                .unwrap(),
+            );
+        }
+    }
+    proposed.expect("the designated proposer was offered the refused close");
+    settle(&mut clients, &[0, 1], &clock, 3).await;
+    for c in &clients {
+        let v = c.verdict().unwrap();
+        assert!(
+            v.anomalies
+                .iter()
+                .all(|a| a.kind != pubky_mayfly::fold::AnomalyKind::Obstruction),
+            "{:?}",
+            v.anomalies
+        );
+        assert!(!v.is_final());
+        assert_eq!(
+            committed_items(c),
+            vec!["Apples".to_string(), "Pears".to_string()]
+        );
+    }
+}
+
+fn committed_items(c: &Client) -> Vec<String> {
+    c.state()
+        .unwrap()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.text.clone())
+        .collect()
+}
+
+/// Closing removes `index/active` even when this client never cached the marker (it was
+/// written in an earlier session). The chain is listed once, as finished.
+#[tokio::test]
+async fn closing_clears_an_active_marker_from_before_this_session() {
+    let shared = MemoryStore::shared();
+    let clock = Clock(Arc::new(AtomicU64::new(NOW_S * 1000)));
+    let parties = [
+        party(&shared, "list.example"),
+        party(&shared, "list.example"),
+    ];
+    let pubkies: Vec<String> = parties.iter().map(|(s, _)| s.pubky()).collect();
+    let spec = GenesisSpec::new(pubkies).with_apps(&["list.example", "list.example"]);
+    let alice = ChainClient::create(List, parties[0].1.clone(), parties[0].0.clone(), spec)
+        .await
+        .unwrap()
+        .with_clock(clock.reader());
+    let invite = alice.invite_url();
+    let mut bob = ChainClient::open_url(List, parties[1].1.clone(), parties[1].0.clone(), &invite)
+        .unwrap()
+        .with_clock(clock.reader());
+    bob.sync().await.unwrap();
+    bob.join().await.unwrap();
+    let mut clients = vec![alice, bob];
+    settle(&mut clients, &[0, 1], &clock, 1).await;
+    // A later session: same store and signer, empty cache. The active marker is on the
+    // homeserver from `join`, not in this client.
+    let mut later =
+        ChainClient::open_url(List, parties[1].1.clone(), parties[1].0.clone(), &invite)
+            .unwrap()
+            .with_clock(clock.reader());
+    let close = clients[0].propose_close(CloseReason::Agreed).await.unwrap();
+    clients[1].sync().await.unwrap();
+    clients[1].confirm(close).await.unwrap();
+    later.sync().await.unwrap();
+    let folder = Folder::from_path(&parties[1].0.path());
+    let chain = later.chain();
+    assert!(
+        parties[1]
+            .1
+            .get(parties[1].1.me(), &folder.active(chain))
+            .await
+            .unwrap()
+            .is_none(),
+        "the active marker from the earlier session is gone"
+    );
+    assert!(parties[1]
+        .1
+        .get(parties[1].1.me(), &folder.finished(chain))
+        .await
+        .unwrap()
+        .is_some());
+}
