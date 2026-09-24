@@ -197,7 +197,7 @@ let store = MemoryStore::new(identity.public_key().z32(), Arc::clone(&shared));
 Deterministic party choice: `pubky_mayfly::vote::designated(chain, seq, round, n)` says whose
 round it is — pick "the silent one" from it rather than hoping. Run everything with
 `cargo test --workspace`; the `tests/testnet.rs` files run the same flows against a real
-homeserver and need a Postgres (README has the Docker one‑liner).
+homeserver and need a Postgres (`docs/DOCKER.md` has the one‑liner).
 
 ## Not yet there
 

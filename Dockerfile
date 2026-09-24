@@ -2,8 +2,8 @@
 # The `mayfly-watchman` service image (MAYFLY.md §16.2.1 E).
 #
 # Build from the pubky-homeserver checkout that contains mayfly/, not from mayfly/ itself: the
-# workspace depends on ../pubky-common, ../pubky-sdk and ../pubky-testnet by path (README,
-# "Layout"), so the context has to hold both trees.
+# workspace depends on ../pubky-common, ../pubky-sdk and ../pubky-testnet by path
+# (docs/DOCKER.md), so the context has to hold both trees.
 #
 #   docker build -f mayfly/Dockerfile -t mayfly-watchman .
 #

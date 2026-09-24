@@ -127,7 +127,7 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
 - `mayfly-watchman` (binary, `crates/watchman`): an `Operator` over a Pubky grant session as a
   service — `--network`, `--homeserver`, `--free`, `--credit <pubky>=<secs>`, `--keypair-file`,
   `--health-addr` (`/healthz`, `/status`); `MAYFLY_WATCHMAN_*` env or `--config` TOML. Name its
-  pubky in `GenesisSpec::witnesses`. README, "The watchman service".
+  pubky in `GenesisSpec::witnesses`. `docs/WATCHMAN.md`.
 
 ## Spec map
 

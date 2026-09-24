@@ -11,4 +11,4 @@ Before writing an app, a rules module, or anything that drives `ChainClient`, re
 Conventions: British English in prose and identifiers; no trailing whitespace; no empty lines
 containing spaces; run `cargo fmt --all`, `cargo clippy --workspace --all-targets` and
 `cargo test --workspace` before finishing. Testnet tests are `#[ignore]`d and need a Postgres
-(see `README.md`).
+(`docs/DOCKER.md`). The README's "Building on Mayfly" section lists the deeper documents.
