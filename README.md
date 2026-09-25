@@ -54,6 +54,7 @@ the crates. They are not added under `apps/`.
 - [The demo](docs/DEMO.md) — the narrated list, and the live explorer.
 - [The watchman service](docs/WATCHMAN.md) — flags, the keypair, health.
 - [Docker](docs/DOCKER.md) — Postgres, the watchman image, the local stack.
+- [Scaling](docs/SCALING.md) — what a watchman costs per sweep, where the limits sit, and what to change.
 - [JavaScript](docs/JAVASCRIPT.md) — the wasm package, the browser client, and the example web apps.
 
 
