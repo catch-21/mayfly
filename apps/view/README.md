@@ -1,11 +1,12 @@
 # Mayfly chain viewer
 
-A read-only web page that follows a Mayfly chain from a `pubky://` link. No sign-in. It lists
-every folder the chain declares (the initiator's, every seat's, every engaged witness's), runs
-the same verifier the parties run (`verifyFrom` from `@synonymdev/mayfly`), and shows each
-committed link with its decoded body, the open seq, the rules state, attributed anomalies, and a
-row per file with the checks on its bytes: signature, bytes against the homeserver ETag, bytes
-against the hash in the file name. A failing check is highlighted on the file it belongs to.
+A read-only web page that follows a Mayfly chain from a `pubky://` link. No sign-in. It uses
+`useChainReader` from `@synonymdev/mayfly-browser`: the reader lists every folder the chain
+declares (the initiator's, every seat's, every engaged witness's), runs the same verifier the
+parties run, and this page shows each committed link with its decoded body, the open seq, the
+rules state, attributed anomalies, and a row per file with the checks on its bytes: signature,
+bytes against the homeserver ETag, bytes against the hash in the file name. A failing check is
+highlighted on the file it belongs to.
 
 Spec: `docs/MAYFLY.md` §14 (chain explorer) and §16.2.1 phase G.
 
@@ -26,10 +27,13 @@ opens whatever chain is in the hash on load.
 
 ## Build
 
-Dependencies are the two locally built wasm packages, referenced with `file:` paths:
+Dependencies are `file:` paths on the sibling checkouts, until the packages are published.
+Build the wasm module first (`npm run build` in `crates/wasm`), then the browser client
+(`npm run build` in `js/browser`):
 
 - `@synonymdev/pubky` from `pubky-sdk/bindings/js/pkg` (the SDK; embeds its own wasm)
-- `@synonymdev/mayfly` from `mayfly/crates/wasm` (run `npm run build` there first)
+- `@synonymdev/mayfly` from `mayfly/crates/wasm`
+- `@synonymdev/mayfly-browser` from `mayfly/js/browser`
 
 ```sh
 npm install
@@ -65,27 +69,25 @@ no server, no environment at run time.
 
 ## How it reads a chain
 
-1. `parseChainUrl` on the (normalised) link gives `{ chain, owner, folder }`.
-2. The initiator's chain folder is listed: `store.list(owner, folder + "chains/" + chain + "/")`.
-   Every `.jws` is fetched and passed to `decodeRecord(bytes, path, etag)`.
-3. Rules detection: the `links/00000000-<h16>.jws` file is genesis; its `payload.body.rules`
-   is the rules id. If `rulesIds()` includes it, `verifyFrom(rules, store, chainUrl)` runs.
-   Otherwise the page says which rules it lacks and still shows the decoded files.
-4. Folder walk: from the verified head, every `seats[].paths` entry is listed under the seat's
-   pubky (`<path>chains/<chain>/`) and every `engaged[].path` under the witness's pubky
-   (`<path>witness/<chain>/`). Duplicates of the initiator folder are skipped.
-5. While `is_final` is false the whole load runs again every 4 s (one in flight at a time);
-   decoded records are cached by ETag so unchanged files are not refetched. Once final,
-   polling stops.
+`src/mayfly.ts` builds a `MayflyApp` with a read-only store and a `RulesRegistry` of the
+rules this build ships (`list/1`). An app with its own rules adds the `RulesModule` to that
+registry; a chain whose rules are not in it is still listed and decoded, and the page says
+the chain cannot be verified here.
+
+`parseChainUrl` cuts a record link back to the chain folder, and that URL is what
+`useChainReader` follows. The reader walks the folders, decodes each `.jws`, and verifies
+when it knows the rules. It polls every 4 s while the chain is open and stops once the
+verifier says it is final, including after a refresh. One reader per page, so a later poll
+refetches only files whose content hash changed.
 
 ## Layout
 
 ```
 src/main.tsx            React root
-src/App.tsx             landing, link form, live polling, page composition
-src/mayfly.ts           wasm init, store, normaliseChainUrl, loadChain
+src/App.tsx             landing, link form, the reader, page composition
+src/mayfly.ts           MayflyApp, the read-only store, the rules registry
 src/marks.ts            which rows go red (own check failed) or amber (anomaly evidence)
-src/types.ts            ChainView, LinkView, RecordView and friends (snake_case, as in Rust)
+src/types.ts            re-exports the browser client's views, plus the list/1 state it draws
 src/format.ts           shortening, local time, error text
 src/components/         Header, Timeline, Files, RecordPanel, RulesState, Anomalies, Json, Short
 src/styles.css          the stylesheet; dark, no framework

@@ -82,9 +82,12 @@ Rules live in the app's own project, with an id `<name>/1`. Two ways to write th
   depends on `pubky-mayfly` and supplies its own. The wasm package ships `list/1` only.
 - **In JavaScript**, write a `RulesModule` object (`js/browser/src/rules.ts`): `id`,
   `referenceHash`, `init`, `mayAppend`, `apply`, `close`, and optionally `wantsReveals`,
-  `obliged`, `status`, `canonicalState`. Pass it wherever a rules id is accepted; no wasm
-  rebuild. `crates/wasm/tests/list.test.mjs` runs a `tally/1` written this way. `link.author`
-  is a pubky, so `init` keeps `genesis.parties` in the state to find a seat.
+  `obliged`, `status`, `canonicalState`. Every method is synchronous; throw to refuse.
+  `status` returns an outcome or nothing while the chain is ongoing. `link.author` is a
+  pubky and `link.body` does not include `kind` (that is `link.kind`), so `init` keeps
+  `genesis.parties` in the state to find a seat. Pass the object wherever a rules id is
+  accepted, and add it to a `RulesRegistry` so the reader can verify chains that name it.
+  No wasm rebuild. `crates/wasm/tests/list.test.mjs` runs a `tally/1` written this way.
 
 Either way:
 
@@ -112,21 +115,41 @@ The shopping list is the only app in this repository. The next app is its own pr
 depends on `@synonymdev/mayfly-browser` (and, for Rust rules, on a wasm build). Read
 `apps/list` and `apps/view` for the shape. Do not add it under `apps/`.
 
-Use the browser client; do not drive the wasm `ChainClient` from a page yourself. The
-protocol logic — the loop, held proposals, decisions, the phase, the home index, the reader —
-is the Rust client's and reaches the page through the wasm module; the browser package adds
-only what a browser has (sign-in, event streams, a timer, a timeout). What it gives you
-(`js/browser/README.md` has the table):
+A page does not write the loop above: `ChainSession` runs it. The page names the app and the
+network, signs the person in, opens the chain, and renders the state the session publishes:
+
+```ts
+const app = new MayflyApp({ clientId: "myapp.example", testnet: true, wasm: wasmUrl });
+const party = await app.party(session);            // after sign-in
+const chain = new ChainSession({
+  rules: myRules, store: party.store, signer: party.signer,
+  url: inviteUrl, wake: pubkyWake(app.pubky),
+});
+chain.subscribe((s) => render(s));                 // phase, state, pending, decisions, …
+chain.start();
+await chain.join();                                // once, after showing the terms
+await chain.propose({ kind: "add", text: "Milk" });
+for (const d of chain.state.decisions) await chain.confirm(d.action.candidate.hash);
+```
+
+`apps/list/src/useList.ts` is this in a hook; `apps/list/src/config.ts` is the app and its
+types. The same objects work without React; the hooks in `@synonymdev/mayfly-browser/react`
+wrap them. What the client gives you (`js/browser/README.md` has the table):
 
 - **`MayflyApp`**: one app on one network. Ring sign-in as a QR, the testnet shortcut,
   remember/restore/forget, `party(session)` → the store and signer, `readOnlyStore()`.
 - **`ChainSession`** (`useChainSession` in React): `phase` (`loading`, `stranger`,
-  `invited`, `waiting`, `open`, `ended`), `parties` and `arrangement` before commit, `state`,
-  `pending` (live round only), `decisions`, `held`, `busy`, `error`; `join`, `propose`,
-  `confirm`, `reject`, `repropose`, `pass`, `proposeClose`, `proposeAbandoned`.
+  `invited`, `waiting`, `open`, `ended`), `parties` and `arrangement` before commit, `view`,
+  `state`, `pending` (live round only), `decisions` (`{ action, seenAt }`; the hash is
+  `action.candidate.hash`), `held`, `myTurn` (only with `autoPass: false`), `busy`, `error`;
+  `join`, `propose`, `withdraw`, `confirm`, `reject`, `repropose`, `pass`, `proposeClose`,
+  `proposeAbandoned`, `confirmAbandoned`. `autoPass` defaults to true.
 - **`ChainReader`** (`useChainReader`): the folder walk, the verifier, decoded files, polling
   that stops when the chain is final. A `RulesRegistry` says which rules it can run.
 - **`myChains`, `createChain`, `parsePubkys`**: the home screen.
+
+A bystander page is the same store with no signer: `app.readOnlyStore()`, a `RulesRegistry`
+of the rules it knows, and `useChainReader`. `apps/view` is that page.
 
 Your page owns: the rules and their types, the screens for each `phase`, how a decision card
 reads, and what a proposal form is. `propose(body)` is held by default until the round takes
@@ -139,8 +162,11 @@ not wait. Set `autoPass: false` for rules where a round of yours is a move to ma
   published. Rebuild after a change in any of them or the page runs stale code. Pass the wasm
   URL to `MayflyApp` (Vite: `?url` import). Two build flavours: mainnet, and `build:testnet`
   served under `/testnet/` against the local homeserver (`docker compose up`).
-- **Errors carry the variant name.** `error.name` is the client error (`Oversize`,
-  `AlreadyVoted`, …) plus `Busy` and `InvalidInput`. Match on the name, not the message.
+- **Errors carry the variant name.** A thrown error's `name` is the client variant
+  (`Oversize`, `AlreadyVoted`, …) plus `Busy`, `InvalidInput` and `Timeout`. `ChainSession`
+  does not throw those: `state.error` is one line, `Oversize: …`, from `describeError`.
+  Errors with `transient: true` are retried inside the loop and never shown. Match a caught
+  error with `errorName`, not the message.
 
 ## What the client does for you, and why
 

@@ -117,8 +117,9 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
   `{ me, store, signer }`, `readOnlyStore()`, `isPubky(s)`, `folder`.
 - `new ChainSession({ rules, store, signer, url, wake?, tickMs?, actionTimeoutMs?, autoPass?,
   holdProposals?, clock? })` → `start()`, `stop()`, `subscribe(fn)`, `state: ChainState`
-  (`phase`, `view`, `arrangement`, `parties`, `myIndex`, `state`, `pending`, `decisions`,
-  `held`, `myTurn`, `awaitingWitnesses`, `busy`, `error`, `lastActions`); `join()`,
+  (`phase`, `view`, `arrangement`, `parties`, `myIndex`, `state`, `pending`, `decisions` as
+  `{ action, seenAt }` with the hash at `action.candidate.hash`, `held`, `myTurn`,
+  `awaitingWitnesses`, `busy`, `error` as a `describeError` string, `lastActions`); `join()`,
   `propose(body, { hold? })`, `withdraw(body)`, `confirm(h)`, `reject(h)`, `repropose(h)`,
   `pass()`, `proposeClose("agreed"|"finished")`, `proposeAbandoned([i])`,
   `confirmAbandoned(h)`, `refresh()`. `pubkyWake(app.pubky)` is the live `wake`. The state
