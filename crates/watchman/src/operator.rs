@@ -13,12 +13,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
+
+use futures_util::StreamExt;
 
 use pubky_mayfly::hash::ChainId;
 use pubky_mayfly_client::layout::Folder;
 use pubky_mayfly_client::{Error, Signer, Store};
 
-use crate::{Terms, Watchman};
+use crate::{PollReport, Terms, Watchman};
 
 /// How a customer pays (§11.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +48,9 @@ pub enum Declined {
 pub struct SweepReport {
     /// Chains engaged this sweep.
     pub engaged: Vec<ChainId>,
+    /// Chains taken back from an earlier process's engagement and receipts on file, without
+    /// a new engagement or any second receipt.
+    pub resumed: Vec<ChainId>,
     /// Chains whose `until` was moved later.
     pub extended: Vec<ChainId>,
     /// Chains whose engagement lapsed and are no longer polled.
@@ -53,6 +59,31 @@ pub struct SweepReport {
     pub declined: Vec<(String, ChainId, Declined)>,
     /// Receipts written across every watched chain.
     pub receipts: usize,
+    /// Chains whose poll did not finish within the deadline; tried again next sweep. Their
+    /// state is intact: a poll marks nothing done until its receipt is on file.
+    pub timed_out: Vec<ChainId>,
+    /// Chains whose poll failed, with the error; the other chains were unaffected.
+    pub failed: Vec<(ChainId, String)>,
+    /// Customers whose `/pub/` could not be listed within the deadline; looked at next sweep.
+    pub slow_customers: Vec<String>,
+    /// Whether this sweep audited (listed with content hashes) rather than polled by name.
+    pub audited: bool,
+}
+
+impl SweepReport {
+    /// Whether the sweep did anything worth a line in a log.
+    pub fn is_quiet(&self) -> bool {
+        self.engaged.is_empty()
+            && self.resumed.is_empty()
+            && self.extended.is_empty()
+            && self.lapsed.is_empty()
+            && self.declined.is_empty()
+            && self.receipts == 0
+            && self.timed_out.is_empty()
+            && self.failed.is_empty()
+            && self.slow_customers.is_empty()
+            && !self.audited
+    }
 }
 
 /// One identity watching many chains.
@@ -62,6 +93,14 @@ pub struct Operator<S: Store + Clone, K: Signer + Clone> {
     terms: Terms,
     engagement_secs: u64,
     renew_before_secs: u64,
+    /// How many chains are polled at once.
+    concurrency: usize,
+    /// How long one chain's poll, one customer's listing, or one engagement may take.
+    deadline: Duration,
+    /// Every this many sweeps, chains are audited (content hashes) instead of polled.
+    audit_every: u32,
+    /// Sweeps so far, for the audit cadence.
+    sweeps: u32,
     customers: BTreeMap<String, Credit>,
     chains: BTreeMap<ChainId, Watchman<S, K>>,
     /// Which customer each chain is charged to.
@@ -72,6 +111,17 @@ pub struct Operator<S: Store + Clone, K: Signer + Clone> {
     finished: BTreeSet<ChainId>,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
+
+/// How many chains are polled at once unless [`Operator::concurrency`] says otherwise.
+pub const DEFAULT_CONCURRENCY: usize = 8;
+
+/// The deadline for one poll, listing or engagement unless [`Operator::deadline`] says
+/// otherwise.
+pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(15);
+
+/// How many sweeps pass between audits unless [`Operator::audit_every`] says otherwise: at
+/// the default fifteen-second sweep, an audit every five minutes.
+pub const DEFAULT_AUDIT_EVERY: u32 = 20;
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -93,6 +143,10 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
             terms,
             engagement_secs: 24 * 3600,
             renew_before_secs: 3600,
+            concurrency: DEFAULT_CONCURRENCY,
+            deadline: DEFAULT_DEADLINE,
+            audit_every: DEFAULT_AUDIT_EVERY,
+            sweeps: 0,
             customers: BTreeMap::new(),
             chains: BTreeMap::new(),
             charged_to: BTreeMap::new(),
@@ -118,6 +172,49 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
     pub fn renew_before(mut self, secs: u64) -> Self {
         self.renew_before_secs = secs;
         self
+    }
+
+    /// How many chains to poll at once (at least one).
+    pub fn concurrency(mut self, chains: usize) -> Self {
+        self.concurrency = chains.max(1);
+        self
+    }
+
+    /// How long one chain's poll, one customer's listing or one engagement may take before it
+    /// is given up for this sweep. A slow homeserver holds only what is on it.
+    pub fn deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
+    }
+
+    /// Every this many sweeps, poll with content hashes ([`Watchman::audit`]) so a mirror
+    /// overwritten in place is caught even where no event named it. `0` never audits.
+    pub fn audit_every(mut self, sweeps: u32) -> Self {
+        self.audit_every = sweeps;
+        self
+    }
+
+    /// The chain ids being watched.
+    pub fn chains(&self) -> impl Iterator<Item = &ChainId> {
+        self.chains.keys()
+    }
+
+    /// A homeserver said a file under a watched folder was written: read it afresh on the
+    /// chain's next poll, even if it has been read before. The chain is what
+    /// [`Self::folders_of`] maps the folder to; an unknown chain is ignored.
+    pub fn mark_changed(&mut self, chain: &ChainId, owner: &str, path: &str) {
+        if let Some(dog) = self.chains.get_mut(chain) {
+            dog.note_changed(owner, path);
+        }
+    }
+
+    /// The folders a watched chain reads: `(owner, protocol folder)` — for whoever wants to
+    /// be told when they change rather than poll them.
+    pub fn folders_of(&self, chain: &ChainId) -> Vec<(String, String)> {
+        self.chains
+            .get(chain)
+            .map(|dog| dog.folders())
+            .unwrap_or_default()
     }
 
     /// Watch `pubky`'s chains for free.
@@ -168,27 +265,116 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
         }
     }
 
-    /// One sweep: find new markers and engage; poll every watched chain; renew what is near
-    /// `until` while credit lasts; drop what has lapsed.
+    /// One sweep: poll every watched chain, a few at a time and each under the deadline; look
+    /// for new and moved markers; renew what is near `until` while credit lasts and has not
+    /// been marked finished; drop what has lapsed. The engaged chains come first because they
+    /// are what the watchman owes time to; discovery and renewal can wait behind them, and a
+    /// renewal is due an hour before it is needed.
     pub async fn sweep(&mut self) -> Result<SweepReport, Error> {
         let mut report = SweepReport::default();
+        self.sweeps = self.sweeps.wrapping_add(1);
+        let thorough = self.audit_every > 0 && self.sweeps.is_multiple_of(self.audit_every);
+        report.audited = thorough;
+        self.poll_all(thorough, &mut report).await;
         self.read_markers(&mut report).await?;
+        self.renew(&mut report).await;
+        // What discovery just engaged has its genesis in hand: receipt it now rather than a
+        // sweep later. Each under the deadline, as any poll.
+        let fresh: Vec<ChainId> = report
+            .engaged
+            .iter()
+            .chain(report.resumed.iter())
+            .cloned()
+            .collect();
+        for chain in fresh {
+            match self.poll_chain(&chain).await {
+                Ok(Some(poll)) => report.receipts += poll.receipts,
+                Ok(None) => {}
+                Err(e) if e.to_string().contains("did not finish") => {
+                    report.timed_out.push(chain);
+                }
+                Err(e) => report.failed.push((chain, e.to_string())),
+            }
+        }
+        Ok(report)
+    }
 
+    /// Poll one chain now — because its folders changed, say — under the same deadline as a
+    /// sweep. `None` if the chain is not watched; `Err` if the poll failed; the report's
+    /// `lapsed` if the engagement has passed (the chain is dropped).
+    pub async fn poll_chain(&mut self, chain: &ChainId) -> Result<Option<PollReport>, Error> {
+        let deadline = self.deadline;
+        let Some(dog) = self.chains.get_mut(chain) else {
+            return Ok(None);
+        };
+        let report = match tokio::time::timeout(deadline, dog.poll()).await {
+            Ok(r) => r?,
+            Err(_) => {
+                return Err(Error::Store(format!(
+                    "poll of {chain} did not finish within {}s",
+                    deadline.as_secs()
+                )))
+            }
+        };
+        if report.lapsed {
+            self.chains.remove(chain);
+        }
+        Ok(Some(report))
+    }
+
+    /// Every watched chain, `concurrency` at a time, each under the deadline. A chain that
+    /// runs out of time or fails is reported and left for the next sweep; the others are
+    /// unaffected. `thorough` audits instead of polling.
+    async fn poll_all(&mut self, thorough: bool, report: &mut SweepReport) {
+        let deadline = self.deadline;
+        // Built into a Vec first so no borrow of the map's iterator crosses an await.
+        let polls: Vec<_> = self
+            .chains
+            .iter_mut()
+            .map(|(chain, dog)| {
+                let chain = chain.clone();
+                async move {
+                    let outcome = if thorough {
+                        tokio::time::timeout(deadline, dog.audit()).await
+                    } else {
+                        tokio::time::timeout(deadline, dog.poll()).await
+                    };
+                    (chain, outcome)
+                }
+            })
+            .collect();
+        let polls = futures_util::stream::iter(polls)
+            .buffer_unordered(self.concurrency)
+            .collect::<Vec<_>>()
+            .await;
+        for (chain, outcome) in polls {
+            match outcome {
+                Ok(Ok(poll)) => {
+                    report.receipts += poll.receipts;
+                    if poll.lapsed {
+                        self.chains.remove(&chain);
+                        report.lapsed.push(chain);
+                    }
+                }
+                Ok(Err(e)) => report.failed.push((chain, e.to_string())),
+                Err(_elapsed) => report.timed_out.push(chain),
+            }
+        }
+        report.lapsed.sort();
+    }
+
+    /// Extend engagements near `until` while credit lasts. Extensions go to the watchman's own
+    /// homeserver; each is still held to the deadline so a slow one cannot stall the sweep.
+    async fn renew(&mut self, report: &mut SweepReport) {
         let now_s = self.now_s();
         let renew_before = self.renew_before_secs;
         let engagement_secs = self.engagement_secs;
+        let deadline = self.deadline;
         let chains: Vec<ChainId> = self.chains.keys().cloned().collect();
         for chain in chains {
-            let Some(dog) = self.chains.get_mut(&chain) else {
+            let Some(dog) = self.chains.get(&chain) else {
                 continue;
             };
-            let poll = dog.poll().await?;
-            report.receipts += poll.receipts;
-            if poll.lapsed {
-                self.chains.remove(&chain);
-                report.lapsed.push(chain);
-                continue;
-            }
             let until = dog.terms().until;
             if until.saturating_sub(now_s) > renew_before || self.finished.contains(&chain) {
                 continue;
@@ -200,12 +386,15 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
             if more == 0 {
                 continue;
             }
-            if let Some(dog) = self.chains.get_mut(&chain) {
-                dog.extend(until + more).await?;
-                report.extended.push(chain);
+            let Some(dog) = self.chains.get_mut(&chain) else {
+                continue;
+            };
+            match tokio::time::timeout(deadline, dog.extend(until + more)).await {
+                Ok(Ok(_)) => report.extended.push(chain),
+                Ok(Err(e)) => report.failed.push((chain, e.to_string())),
+                Err(_) => report.timed_out.push(chain),
             }
         }
-        Ok(report)
     }
 
     /// Each customer's `/pub/` is the work queue: an `index/active/<chain_id>` marker under a
@@ -218,7 +407,25 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
         let customers: Vec<String> = self.customers.keys().cloned().collect();
         let mut requests: BTreeMap<ChainId, Vec<Marker>> = BTreeMap::new();
         for customer in customers {
-            let mut listed = self.store.list(&customer, "/pub/").await?;
+            // Names only: a marker is read by fetching it, and a customer's `/pub/` may hold
+            // far more than markers. A homeserver that does not answer in time is left for
+            // the next sweep; the engaged chains have already been served.
+            let listed = {
+                let store = self.store.clone();
+                let owner = customer.clone();
+                let prefix = String::from("/pub/");
+                tokio::time::timeout(self.deadline, async move {
+                    store.list_names(&owner, &prefix).await
+                })
+                .await
+            };
+            let mut listed = match listed {
+                Ok(l) => l?,
+                Err(_) => {
+                    report.slow_customers.push(customer);
+                    continue;
+                }
+            };
             listed.truncate(MAX_LISTING);
             for l in listed {
                 let Some((folder, state, id)) = marker(&l.path) else {
@@ -262,9 +469,24 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
             for m in markers {
                 let key = (m.customer.clone(), m.path.clone());
                 self.markers.insert(key.clone());
-                match self.engage(&m, &chain).await? {
-                    Ok(()) => {
+                let outcome =
+                    match tokio::time::timeout(self.deadline, self.engage(&m, &chain)).await {
+                        Ok(outcome) => outcome?,
+                        Err(_) => {
+                            // Genesis or the watchman's own folder did not answer in time; the
+                            // marker is looked at again next sweep.
+                            self.markers.remove(&key);
+                            report.slow_customers.push(m.customer.clone());
+                            break;
+                        }
+                    };
+                match outcome {
+                    Ok(Engaged::Fresh) => {
                         report.engaged.push(chain.clone());
+                        break;
+                    }
+                    Ok(Engaged::Resumed) => {
+                        report.resumed.push(chain.clone());
                         break;
                     }
                     Err(why) => {
@@ -285,8 +507,14 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
         Ok(())
     }
 
-    /// Engage on one marker.
-    async fn engage(&mut self, m: &Marker, chain: &ChainId) -> Result<Result<(), Declined>, Error> {
+    /// Engage on one marker. If this watchman's folder already holds a live engagement for the
+    /// chain — an earlier process's — it is taken back as it stands, with every receipt on
+    /// file, and no credit is drawn: the customer paid for that time already.
+    async fn engage(
+        &mut self,
+        m: &Marker,
+        chain: &ChainId,
+    ) -> Result<Result<Engaged, Declined>, Error> {
         let customer = m.customer.as_str();
         let initiator = m.initiator.clone();
         let clock = Arc::clone(&self.clock);
@@ -313,17 +541,46 @@ impl<S: Store + Clone, K: Signer + Clone> Operator<S, K> {
         if !named {
             return Ok(Err(Declined::NotNamed));
         }
-        let secs = self.draw(customer, self.engagement_secs);
-        if secs == 0 {
+        let resumed = dog.resume().await?;
+        if dog.is_engaged() {
+            // The engagement on file is this kid's and still runs: nothing to publish, nothing
+            // to charge.
+            self.charged_to.insert(chain.clone(), customer.to_string());
+            self.chains.insert(chain.clone(), dog);
+            return Ok(Ok(Engaged::Resumed));
+        }
+        // A new engagement, from now for `engagement_secs` — but never ending before the one
+        // on file, and charged only for the time beyond it. After a restart with a fresh
+        // client key this is how the engagement continues under the new key (§11.2).
+        let now = self.now_s();
+        let floor = resumed.until.unwrap_or(0).max(now);
+        let want = (now + self.engagement_secs).saturating_sub(floor);
+        let got = if want == 0 {
+            0
+        } else {
+            self.draw(customer, want)
+        };
+        if got == 0 && floor == now {
             return Ok(Err(Declined::NoCredit));
         }
-        let until = self.now_s() + secs;
-        dog.set_until(until);
+        dog.set_until(floor + got);
         dog.engage().await?;
         self.charged_to.insert(chain.clone(), customer.to_string());
         self.chains.insert(chain.clone(), dog);
-        Ok(Ok(()))
+        Ok(Ok(if resumed.receipts > 0 || resumed.until.is_some() {
+            Engaged::Resumed
+        } else {
+            Engaged::Fresh
+        }))
     }
+}
+
+/// How a marker led to a watched chain.
+enum Engaged {
+    /// A new engagement was published and credit drawn.
+    Fresh,
+    /// An earlier process's engagement was still live and was taken back.
+    Resumed,
 }
 
 /// One `index/active/<chain_id>` marker as read from a customer's `/pub/`.

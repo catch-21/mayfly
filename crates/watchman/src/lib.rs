@@ -25,7 +25,10 @@
 
 pub mod operator;
 
-pub use operator::{Credit, Declined, Operator, SweepReport};
+pub use operator::{
+    Credit, Declined, Operator, SweepReport, DEFAULT_AUDIT_EVERY, DEFAULT_CONCURRENCY,
+    DEFAULT_DEADLINE,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -113,8 +116,12 @@ enum RecordKind {
 }
 
 /// A record found in a party's folder, decoded and signature-checked, not yet receipted.
+#[derive(Clone)]
 struct Observed {
     owner: String,
+    /// The file it was read from, marked seen once its receipt is written; `None` for a QC
+    /// member described from a link's embedded bytes.
+    file: Option<FolderRef>,
     bytes: Vec<u8>,
     hash: Hash,
     kind: RecordKind,
@@ -137,6 +144,15 @@ pub struct Issued {
     pub receipt: Signed<Receipt>,
     /// The observed record's hash.
     pub record: Hash,
+}
+
+/// What [`Watchman::resume`] found in the watchman's own folder.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Resumed {
+    /// The `until` of the engagement on file, if there is one.
+    pub until: Option<u64>,
+    /// Receipts read back.
+    pub receipts: usize,
 }
 
 /// A watchman for one chain.
@@ -234,11 +250,17 @@ impl<S: Store, K: Signer> Watchman<S, K> {
         self.lapsed()
     }
 
-    /// Set `until` before engaging. After engaging, use [`Self::extend`].
+    /// Set `until` before engaging, or after an engagement has lapsed. While one is live, use
+    /// [`Self::extend`]: an engagement is never shortened.
     pub fn set_until(&mut self, until: u64) {
-        if self.engagement.is_none() {
+        if self.engagement.is_none() || self.lapsed() {
             self.terms.until = until;
         }
+    }
+
+    /// Whether an engagement is on file and has not lapsed.
+    pub fn is_engaged(&self) -> bool {
+        self.engagement.is_some() && !self.lapsed()
     }
 
     /// Every folder being watched.
@@ -280,7 +302,7 @@ impl<S: Store, K: Signer> Watchman<S, K> {
     /// Read the watched folders without receipting anything (what is found is receipted at
     /// the next [`Self::poll`]). Returns whether genesis has been seen.
     pub async fn discover(&mut self) -> Result<bool, Error> {
-        let found = self.collect().await?;
+        let found = self.collect(false).await?;
         self.pending.extend(found);
         Ok(self.genesis.is_some())
     }
@@ -289,6 +311,84 @@ impl<S: Store, K: Signer> Watchman<S, K> {
     /// found it.
     pub fn genesis(&self) -> Option<&Genesis> {
         self.genesis.as_ref()
+    }
+
+    /// Continue where an earlier process left off: read this watchman's own
+    /// `witness/<chain_id>/` folder and take back the engagement on file and every receipt
+    /// already issued, so that a restart neither shortens `until` nor writes a second receipt
+    /// — with a later `observed_at` — for a record whose true time is already on record
+    /// (§11.3). Idempotent; cheap when the folder is empty.
+    ///
+    /// Everything in the folder is this watchman's own work whatever `kid` signed it: the
+    /// folder is written by one pubky, and a Grant client key is minted at each sign-in. A
+    /// receipt by an earlier kid is verified under the engagement that kid published
+    /// (`engage/<kid>.jws`), so it stands. The engagement on file is taken up as it is when
+    /// the kid is still this one; otherwise its `until` is kept as the floor a new engagement
+    /// may not fall below, and [`Self::engage`] publishes under the new kid.
+    pub async fn resume(&mut self) -> Result<Resumed, Error> {
+        let me = self.store.me().to_string();
+        let wf = self.witness_folder();
+        let mut out = Resumed::default();
+        let listed = self.store.list_names(&me, wf.as_str()).await?;
+        let mut receipts: Vec<Signed<Receipt>> = Vec::new();
+        for l in listed {
+            let rel = &l.path[wf.as_str().len().min(l.path.len())..];
+            if rel == "engage.jws" {
+                let Some(bytes) = self.store.get(&me, &l.path).await? else {
+                    continue;
+                };
+                if let Ok(e) = Signed::<Engagement>::decode(bytes.clone(), typ::WITNESS) {
+                    if e.payload.chain != self.chain {
+                        continue;
+                    }
+                    // The later engagement governs (§11.2); never go back to an earlier one.
+                    if e.payload.until >= self.terms.until {
+                        self.terms.until = e.payload.until;
+                        self.terms.service = e.payload.service;
+                        if self.parties.is_empty() {
+                            self.parties = e.payload.parties.clone();
+                        }
+                        if e.payload.kid == self.signer.kid() {
+                            self.engagement = Some(bytes);
+                        }
+                    }
+                    out.until = Some(e.payload.until.max(out.until.unwrap_or(0)));
+                }
+                continue;
+            }
+            // Receipts are `<seq8>-<h16>.jws` and `revoked-<kid>-<h16>.jws` at the folder's
+            // top level; `engage/` and `mirror/` hold no receipts.
+            if rel.contains('/') || !rel.ends_with(".jws") {
+                continue;
+            }
+            let Some(bytes) = self.store.get(&me, &l.path).await? else {
+                continue;
+            };
+            if let Ok(r) = Signed::<Receipt>::decode(bytes, typ::WITNESS) {
+                if r.payload.chain == self.chain {
+                    receipts.push(r);
+                }
+            }
+        }
+        // Earliest first, so `votes` keeps the first record each key was seen to vote for.
+        receipts.sort_by_key(|r| r.payload.source.cursor);
+        for r in receipts {
+            let Ok(record) = Hash::parse(&r.payload.record) else {
+                continue;
+            };
+            if self.receipted.contains_key(&record) {
+                continue;
+            }
+            if let Some(seq) = r.payload.seq {
+                self.votes
+                    .entry((r.payload.by.clone(), seq, r.payload.round))
+                    .or_insert(record);
+            }
+            self.cursor = self.cursor.max(r.payload.source.cursor);
+            self.receipted.insert(record, Issued { receipt: r, record });
+            out.receipts += 1;
+        }
+        Ok(out)
     }
 
     /// Publish `engage.jws` (and the historic copy under `engage/<kid>.jws`), naming the
@@ -347,19 +447,47 @@ impl<S: Store, K: Signer> Watchman<S, K> {
 
     /// One sweep: read every party folder, receipt every new record in causal order, and at
     /// the `mirror` tier copy it. Idempotent: a record is receipted once, by hash.
+    ///
+    /// Safe to cancel (an operator gives each poll a deadline): nothing is marked seen or
+    /// taken from `pending` until its receipt is on file, so a poll cut short leaves work for
+    /// the next one, never a record silently skipped.
     pub async fn poll(&mut self) -> Result<PollReport, Error> {
+        self.sweep(false).await
+    }
+
+    /// A [`Self::poll`] that also asks each folder for its files' content hashes and refetches
+    /// any hash-named file whose bytes have changed since it was read: a mirror overwritten in
+    /// place (§7), receipted as inconsistent (§11.3). One `HEAD` per file, so a sweep of a long
+    /// chain costs as many requests as it has files; run it on a slow cadence, and let an event
+    /// on a known path ([`Self::note_changed`]) cover the time between.
+    pub async fn audit(&mut self) -> Result<PollReport, Error> {
+        self.sweep(true).await
+    }
+
+    /// A file this watchman has read was written again (a homeserver event said so): read it
+    /// afresh on the next poll, whatever its name claims.
+    pub fn note_changed(&mut self, owner: &str, path: &str) {
+        self.seen.remove(&(owner.to_string(), path.to_string()));
+    }
+
+    async fn sweep(&mut self, thorough: bool) -> Result<PollReport, Error> {
         let mut report = PollReport::default();
         if self.lapsed() {
             report.lapsed = true;
             return Ok(report);
         }
-        let mut found = std::mem::take(&mut self.pending);
-        found.extend(self.collect().await?);
+        let mut found = self.pending.clone();
+        found.extend(self.collect(thorough).await?);
         // Causal order: by seq, links before votes; revocations (no seq) last; then by hash so
         // two watchmen sweeping the same files write in the same order.
         found.sort_by_key(|o| (o.seq.unwrap_or(u64::MAX), o.kind, o.hash));
+        let mut done: BTreeSet<Hash> = BTreeSet::new();
         for o in found {
-            if self.receipted.contains_key(&o.hash) {
+            if !done.insert(o.hash) || self.receipted.contains_key(&o.hash) {
+                // Already on record — earlier in this poll (a mirror of a record just
+                // receipted from its author's folder), from an earlier poll, or read back by
+                // `resume`. The file is still marked seen, or it would be fetched every sweep.
+                self.settle(&o);
                 continue;
             }
             for member in &o.qc {
@@ -374,6 +502,14 @@ impl<S: Store, K: Signer> Watchman<S, K> {
             self.issue(&o, &mut report).await?;
         }
         Ok(report)
+    }
+
+    /// The observation is dealt with: its file is seen and it is no longer pending.
+    fn settle(&mut self, o: &Observed) {
+        if let Some(file) = &o.file {
+            self.seen.insert(file.clone(), o.hash);
+        }
+        self.pending.retain(|p| p.hash != o.hash);
     }
 
     /// Poll every `poll_ms` until `stop` resolves or the engagement lapses.
@@ -448,13 +584,20 @@ impl<S: Store, K: Signer> Watchman<S, K> {
                 record: o.hash,
             },
         );
+        self.settle(o);
         Ok(())
     }
 
     /// List every watched folder, fetch what is new, decode and signature-check it. Grows the
     /// watched set from what it reads (genesis hints, genesis confirmations, recovers) and
     /// reads again until nothing new appears.
-    async fn collect(&mut self) -> Result<Vec<Observed>, Error> {
+    ///
+    /// Listings are by name only ([`Store::list_names`]) unless `thorough`: records are named
+    /// by hash, so a file seen once is fetched once, and a sweep of a quiet chain is one
+    /// request per folder prefix however long the chain. Rejects — named by round,
+    /// overwritable — are always refetched. A `thorough` pass lists with content hashes and
+    /// refetches any file whose bytes changed under a name that promised they would not.
+    async fn collect(&mut self, thorough: bool) -> Result<Vec<Observed>, Error> {
         let mut out = Vec::new();
         for _ in 0..4 {
             let before = self.folders.len();
@@ -467,7 +610,12 @@ impl<S: Store, K: Signer> Watchman<S, K> {
                     format!("{}keys/", folder.as_str()),
                 ];
                 for prefix in prefixes {
-                    listed.extend(self.store.list(owner, &prefix).await?);
+                    let page = if thorough {
+                        self.store.list(owner, &prefix).await?
+                    } else {
+                        self.store.list_names(owner, &prefix).await?
+                    };
+                    listed.extend(page);
                 }
             }
             listed.truncate(MAX_FILES_PER_SWEEP);
@@ -476,8 +624,6 @@ impl<S: Store, K: Signer> Watchman<S, K> {
                     continue;
                 }
                 let key = (l.owner.clone(), l.path.clone());
-                // Rejects are named by round and may be overwritten by their author (§7);
-                // everything else is named by hash and fetched once.
                 let refetch = l.path.contains("/rejects/")
                     || matches!((&l.content_hash, self.seen.get(&key)), (Some(h), Some(s)) if h != s);
                 if self.seen.contains_key(&key) && !refetch {
@@ -490,7 +636,6 @@ impl<S: Store, K: Signer> Watchman<S, K> {
                 if self.seen.get(&key) == Some(&hash) {
                     continue;
                 }
-                self.seen.insert(key, hash);
                 let Some(folder) = folders
                     .iter()
                     .filter(|(o, p)| *o == l.owner && l.path.starts_with(p.as_str()))
@@ -499,8 +644,17 @@ impl<S: Store, K: Signer> Watchman<S, K> {
                 else {
                     continue;
                 };
-                if let Some(o) = self.describe(&l.owner, &l.path[folder.len()..], bytes) {
-                    out.push(o);
+                match self.describe(&l.owner, &l.path[folder.len()..], bytes) {
+                    Some(mut o) => {
+                        // Marked seen when its receipt is written (`settle`), not before.
+                        o.file = Some(key);
+                        out.push(o);
+                    }
+                    // Not a record of this chain (another witness's receipt, a mirrored
+                    // engagement, bytes that do not decode): nothing to receipt, seen now.
+                    None => {
+                        self.seen.insert(key, hash);
+                    }
                 }
             }
             if self.folders.len() == before {
@@ -530,6 +684,7 @@ impl<S: Store, K: Signer> Watchman<S, K> {
                 let misnamed = name_h16(name, 1) != Some(hash.h16());
                 Some(Observed {
                     owner: owner.into(),
+                    file: None,
                     hash,
                     kind: RecordKind::Link,
                     typ: typ::LINK,
@@ -562,6 +717,7 @@ impl<S: Store, K: Signer> Watchman<S, K> {
                 let mirror_name = mirrored_confirmation_name(&c.payload, &link);
                 Some(Observed {
                     owner: owner.into(),
+                    file: None,
                     hash,
                     kind: RecordKind::Confirm,
                     typ: typ::CONFIRM,
@@ -582,6 +738,7 @@ impl<S: Store, K: Signer> Watchman<S, K> {
                 r.verify(&parse_z32(&r.payload.kid).ok()?).ok()?;
                 Some(Observed {
                     owner: owner.into(),
+                    file: None,
                     hash,
                     kind: RecordKind::Reject,
                     typ: typ::REJECT,
@@ -600,6 +757,7 @@ impl<S: Store, K: Signer> Watchman<S, K> {
                 let misnamed = name.trim_end_matches(".revoked.jws") != r.payload.revoked;
                 Some(Observed {
                     owner: owner.into(),
+                    file: None,
                     hash,
                     kind: RecordKind::Revoke,
                     typ: typ::REVOKE,
@@ -629,6 +787,7 @@ impl<S: Store, K: Signer> Watchman<S, K> {
         let name = mirrored_confirmation_name(&c.payload, &link_hash);
         Some(Observed {
             owner: owner.into(),
+            file: None,
             hash,
             kind: RecordKind::Confirm,
             typ: typ::CONFIRM,

@@ -166,17 +166,28 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
 
 ## Watchman (`pubky_mayfly_watchman`)
 
-- `Watchman::new(store, signer, chain, initiator, Terms)` → `engage()`, `poll()`, `extend(until)`,
-  `run_until(stop)`, `receipts()`, `observed_at(&hash)`.
+- `Watchman::new(store, signer, chain, initiator, Terms)` → `resume()` (take back the
+  engagement and receipts on file; never receipt twice), `engage()`, `poll()` (by name, cheap;
+  safe to cancel), `audit()` (with content hashes; catches a rewritten mirror),
+  `note_changed(owner, path)`, `extend(until)`, `run_until(stop)`, `receipts()`,
+  `observed_at(&hash)`, `is_engaged()`.
 - `Terms::receipts(until)` / `Terms::mirror(until)` / `.poll_every(ms)`.
 - `Operator::new(store, signer, terms)` → `free(pubky)`, `credit(pubky, secs)`, `engage_for(secs)`,
-  `renew_before(secs)`, `sweep()` → `SweepReport { engaged, extended, lapsed, declined, receipts }`.
-  Reads customers' `/pub/` for `index/active/<id>` markers; charges free customer → initiator →
-  first by pubky.
+  `renew_before(secs)`, `concurrency(n)`, `deadline(d)`, `audit_every(n)`, `sweep()` →
+  `SweepReport { engaged, resumed, extended, lapsed, declined, receipts, timed_out, failed,
+  slow_customers, audited }`, `poll_chain(&id)`, `mark_changed(&id, owner, path)`,
+  `chains()`, `folders_of(&id)`. Polls engaged chains first, `concurrency` at a time under
+  `deadline`; reads customers' `/pub/` for `index/active/<id>` markers; charges free customer →
+  initiator → first by pubky. Resumes rather than re-engages when its folder holds a live
+  engagement.
+- `Store::list_names(owner, prefix)`: a listing without content hashes, one request per page;
+  what the watchman polls with. `Store::list` adds a `HEAD` per file for the tamper check.
 - `mayfly-watchman` (binary, `crates/watchman`): an `Operator` over a Pubky grant session as a
   service — `--network`, `--homeserver`, `--free`, `--credit <pubky>=<secs>`, `--keypair-file`,
-  `--health-addr` (`/healthz`, `/status`); `MAYFLY_WATCHMAN_*` env or `--config` TOML. Name its
-  pubky in `GenesisSpec::witnesses`. `docs/WATCHMAN.md`.
+  `--health-addr` (`/healthz`, `/status`), `--deadline-secs`, `--concurrency`,
+  `--audit-every`, `--events`; `MAYFLY_WATCHMAN_*` env or `--config` TOML. Follows the
+  parties' event streams and polls a chain when its folders change; sweeps as the fallback.
+  Name its pubky in `GenesisSpec::witnesses`. `docs/WATCHMAN.md`.
 
 ## Spec map
 

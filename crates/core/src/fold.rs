@@ -825,6 +825,9 @@ impl<'a, R: Rules> Fold<'a, R> {
         verify_grant(&e.payload.grant, &pubky_pk, &kid_pk, &e.payload.path).ok()?;
         e.verify(&kid_pk).ok()?;
         self.engagement_keys.insert(e.payload.kid.clone(), kid_pk);
+        // Every key this witness has published under: its receipts by an earlier key are
+        // still its receipts (§11.2).
+        self.receipts.register(&e.payload.kid, pubky);
         Some(Engaged {
             pubky: pubky.to_string(),
             kid: e.payload.kid.clone(),

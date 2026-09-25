@@ -21,6 +21,9 @@ pubky.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["time", "macros", "rt-multi-thread", "signal", "net", "fs", "sync"] }
+# Chains are polled a few at a time, each under a deadline, so one slow homeserver holds
+# only its own chain.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive", "env"] }
 toml = "1"
 hex = "0.4"
@@ -31,3 +34,5 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 [dev-dependencies]
 pubky-testnet.workspace = true
 tempfile = "3"
+# Tests implement `Store` over a wrapper that can stall one homeserver.
+async-trait = "0.1"

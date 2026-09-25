@@ -100,6 +100,31 @@ impl Store for PubkyStore {
     async fn list(&self, owner: &str, prefix: &str) -> Result<Vec<Listed>, Error> {
         let pk = owner_key(owner)?;
         let storage = self.pubky.public_storage();
+        let mut out = self.list_names(owner, prefix).await?;
+        // A listing carries no hashes, but every file's `ETag` is its BLAKE3 (§2, §6), so a
+        // HEAD per entry tells a client which cached files were overwritten in place (§7) —
+        // the tampered-mirror case — without fetching them. Done concurrently, in batches.
+        for chunk in out.chunks_mut(8) {
+            let stats = futures_util::future::join_all(
+                chunk
+                    .iter()
+                    .map(|l| retrying(|| storage.stats((&pk, l.path.as_str())))),
+            )
+            .await;
+            for (l, s) in chunk.iter_mut().zip(stats) {
+                l.content_hash = s
+                    .ok()
+                    .flatten()
+                    .and_then(|s| s.etag)
+                    .and_then(|e| Hash::parse(&e).ok());
+            }
+        }
+        Ok(out)
+    }
+
+    async fn list_names(&self, owner: &str, prefix: &str) -> Result<Vec<Listed>, Error> {
+        let pk = owner_key(owner)?;
+        let storage = self.pubky.public_storage();
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -133,24 +158,6 @@ impl Store for PubkyStore {
                 break;
             }
             cursor = out.last().map(|l| format!("pubky://{}{}", l.owner, l.path));
-        }
-        // A listing carries no hashes, but every file's `ETag` is its BLAKE3 (§2, §6), so a
-        // HEAD per entry tells a client which cached files were overwritten in place (§7) —
-        // the tampered-mirror case — without fetching them. Done concurrently, in batches.
-        for chunk in out.chunks_mut(8) {
-            let stats = futures_util::future::join_all(
-                chunk
-                    .iter()
-                    .map(|l| retrying(|| storage.stats((&pk, l.path.as_str())))),
-            )
-            .await;
-            for (l, s) in chunk.iter_mut().zip(stats) {
-                l.content_hash = s
-                    .ok()
-                    .flatten()
-                    .and_then(|s| s.etag)
-                    .and_then(|e| Hash::parse(&e).ok());
-            }
         }
         Ok(out)
     }

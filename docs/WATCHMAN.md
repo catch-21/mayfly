@@ -1,12 +1,39 @@
 # The watchman service
 
 `mayfly-watchman` (in `crates/watchman`) is the hosted watchman of spec §16.2.1 E: one
-identity signed in to one homeserver as one app, running an `Operator` (§11.2) on a timer.
-Its customers are pubkys, watched for free or against prepaid watch-time; it finds their chains
-from the `index/active/<chain_id>` markers their clients write anyway, engages if genesis names
-it, receipts every record it observes, renews before `until` while credit lasts, and lets an
-engagement lapse when the marker moves to `index/finished/`. A sweep that fails is logged and
-tried again next interval; the service stops only on SIGINT or SIGTERM.
+identity signed in to one homeserver as one app, running an `Operator` (§11.2). Its customers
+are pubkys, watched for free or against prepaid watch-time; it finds their chains from the
+`index/active/<chain_id>` markers their clients write anyway, engages if genesis names it,
+receipts every record it observes, renews before `until` while credit lasts, and lets an
+engagement lapse when the marker moves to `index/finished/`. The service stops only on SIGINT
+or SIGTERM.
+
+**How it keeps up.** Two things drive it. It follows each party's homeserver event stream
+for the folders of the chains it watches, and polls a chain within a second of one of its
+folders changing. Every `--sweep-secs` it also sweeps everything: polls every watched chain,
+reads the customers' markers, renews what is due. The sweep is the fallback the stream does
+not need to be reliable for; a stream that cannot be opened costs promptness, nothing else,
+and is opened again at the next sweep. Polls list folders by name — one request per folder
+prefix, however long the chain — and fetch only what has not been read. Every
+`--audit-every` sweeps the listing asks for content hashes too, so a mirror overwritten in
+place is caught (§7) even where no event named it; an event on a known path does the same at
+once.
+
+**Slow homeservers.** Chains are polled `--concurrency` at a time, each under
+`--deadline-secs`. A homeserver that does not answer in time delays only the chain it is
+part of, which is reported (`timed_out` on `/status`) and tried next sweep with nothing lost:
+a poll marks nothing done until its receipt is on file. Engaged chains are served before
+discovery; a customer whose `/pub/` will not list in time is skipped (`slow_customers`) and
+looked at next sweep. A sweep that fails outright is logged and tried again next interval.
+
+**Restarts.** On start the watchman reads its own `witness/<chain_id>/` folders back: every
+receipt it has issued, and the engagement on file. It receipts nothing twice, so the
+`observed_at` first written stands, and it never publishes an engagement ending earlier than
+the one on file. A restart signs in afresh and so gets a new client key (`kid`); a new
+engagement is published under it, ending no earlier than the old one and charged only for
+time beyond it, and the receipts under the old key remain that witness's receipts — the fold
+reads a witness as its pubky across every key it has held (`engage/<kid>.jws` keeps each
+engagement so they stay verifiable).
 
 Every flag has a `MAYFLY_WATCHMAN_*` environment variable, and `--config <file>` names a TOML
 file with the same keys in snake case; a flag or variable wins over the file, the file over
@@ -33,6 +60,10 @@ cargo run -p pubky-mayfly-watchman --bin mayfly-watchman -- \
 | `--credit <pubky>=<secs>` (repeatable) | `MAYFLY_WATCHMAN_CREDIT` (comma-separated) | none |
 | `--engage-secs` / `--renew-before-secs` | `..._ENGAGE_SECS` / `..._RENEW_BEFORE_SECS` | `86400` / `3600` |
 | `--poll-ms` / `--sweep-secs` | `..._POLL_MS` / `..._SWEEP_SECS` | `5000` / `15` |
+| `--deadline-secs` | `MAYFLY_WATCHMAN_DEADLINE_SECS` | the sweep interval |
+| `--concurrency` | `MAYFLY_WATCHMAN_CONCURRENCY` | `8` |
+| `--audit-every` (sweeps; `0` never) | `MAYFLY_WATCHMAN_AUDIT_EVERY` | `20` |
+| `--events true\|false` | `MAYFLY_WATCHMAN_EVENTS` | `true` |
 | `--tier receipts\|mirror` | `MAYFLY_WATCHMAN_TIER` | `receipts` |
 | `--health-addr <ip:port>` | `MAYFLY_WATCHMAN_HEALTH_ADDR` | off |
 | `--config <path>` | `MAYFLY_WATCHMAN_CONFIG` | none |
@@ -60,6 +91,8 @@ three sweep intervals and `503` otherwise (including before the first sweep), an
 is JSON: `pubky`, `kid`, `client_id`, `network`, `homeserver`, `path`, `healthy`, `watching`
 (`chain`, `until`, `receipts` per engaged chain), `customers` (`pubky`, `credit` as `"free"`
 or `{"seconds": n}`), `sweeps`, `errors`, `last_sweep_at`, `last_sweep` (`engaged`,
-`extended`, `lapsed`, `declined`, `receipts`) and `last_error`.
+`resumed`, `extended`, `lapsed`, `declined`, `receipts`, `timed_out`, `failed`,
+`slow_customers`, `audited`), `last_error`, `event_polls` and `event_receipts` (polls made
+because a stream reported a change, and what they wrote), and `streams` (event streams open).
 
 The container image and the local compose stack are in [Docker](DOCKER.md).

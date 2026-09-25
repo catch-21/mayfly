@@ -1,11 +1,45 @@
 # Scaling
 
-How far the current implementation goes, what stops it, and what to change. Read from the
-code as it stands (`crates/watchman`, `crates/client/src/pubky_store.rs`,
-`crates/client/src/chain.rs`), with the numbers worked from it rather than measured under
-load. Where a figure is an estimate it says so. Section references are to `docs/MAYFLY.md`.
+How far the implementation goes, what stops it, and what to change. Read from the code, with
+the numbers worked from it rather than measured under load. Where a figure is an estimate it
+says so. Section references are to `docs/MAYFLY.md`.
 
-## The short answer
+## Where things stand
+
+The watchman was brought to the "small operator" level of the table below; the report that
+follows was written against the code before that, and is kept because its cost model is how
+the remaining items were found. What changed (`crates/watchman`, `crates/client/src/store.rs`,
+`crates/core/src/witness.rs`):
+
+- **Listings by name.** `Store::list_names` lists without a `HEAD` per file; the watchman
+  polls with it. A sweep of a quiet chain is one request per folder prefix however long the
+  chain (point 1 below). A thorough listing, with content hashes, runs every twentieth sweep
+  (`--audit-every`) to catch a mirror overwritten in place, and an event on a known path
+  forces a re-read at once.
+- **Event streams.** The service follows one homeserver event stream per (party, app
+  folder) among the watched chains and polls a chain within a second of one of its folders
+  changing (point 4). The sweep is the fallback; a stream that will not open is retried at
+  the next sweep. Measured on the compose stack: a new link receipted 469 ms after it
+  committed, by an event poll, not a sweep.
+- **Concurrent polls with a deadline.** Chains are polled eight at a time, each under a
+  deadline (the sweep interval by default), so a homeserver that has gone away delays only
+  the chain it is on (point 5). Engaged chains are served before discovery; a customer whose
+  `/pub/` will not list in time is skipped that sweep. A poll marks nothing done until its
+  receipt is on file, so a cut-short poll loses nothing.
+- **Resume on restart.** The watchman reads its own `witness/<id>/` folder back on start and
+  receipts nothing twice, so the first `observed_at` stands (point 6). A restart gets a new
+  client key; the engagement is republished under it, never ending earlier than the one on
+  file and charged only for the extra time. The fold now reads a witness as its pubky across
+  every key it has held (`Receipts::observed`), which is what §11.2 keeps `engage/<kid>.jws`
+  for; before this, receipts by an earlier key were verified and then not counted, and the
+  re-receipting on restart was what kept links looking witnessed.
+
+Not done, and not needed at this level: a listing cursor (point 3; the 10,000-file ceiling
+in point 7 stands), shallow-listing `/pub/` for markers (point 2; a customer's `/pub/` is
+still listed in full, but by name), persistence of the receipted set (it is rebuilt from the
+folder on start, one fetch per receipt), and the client-side changes in points 8 and 9.
+
+## The short answer, as first written
 
 A watchman watching tens of customers and a handful of live chains is well within a small
 container: the process is a few megabytes and nearly idle, it signs one Ed25519 receipt per
@@ -190,18 +224,20 @@ sweep stay well under what the members' homeservers allow an anonymous IP.
 
 ## What to do, in order
 
-1. Split `PubkyStore::list` into a listing without `HEAD`s and a tamper check on demand;
-   use the former in the watchman everywhere and in the client for hash-named files.
-2. List `chains/<id>/links/` (and confirms, rejects, receipts) from a cursor at the last
+Done (see "Where things stand"): listings without `HEAD`s in the watchman; the receipted set
+rebuilt from the watchman's own folder on start; one event stream per party folder with the
+sweep as fallback; concurrent polls under a deadline, reported on `/status`.
+
+Still to do, for the "service" level:
+
+1. List `chains/<id>/links/` (and confirms, rejects, receipts) from a cursor at the last
    seen seq; make `MAX_FILES_PER_SWEEP` and `max_files_per_sync` bound one sweep, not the
    chain.
-3. Shallow-list `/pub/` for app folders, then list `index/` under each.
-4. Rebuild `receipted` from the watchman's own `witness/<id>/` on start (or persist it
-   beside the keypair), so a restart issues no second receipts.
-5. Subscribe the watchman to one event stream per party homeserver; poll on a slow interval
-   as the fallback. Same for the client's `wait_for_event`, which already exists.
-6. Poll chains concurrently with a small limit, a per-request deadline, and a per-sweep
-   budget; report an overrun on `/status`.
-7. Then measure: a load harness against the compose stack with `n` synthetic chains of
+2. Shallow-list `/pub/` for app folders, then list `index/` under each.
+3. Use `list_names` in the client for hash-named files, and its `wait_for_event` as the
+   trigger, so the party clients and the viewer stop paying a `HEAD` per file every tick.
+4. Persist the receipted set beside the keypair, so a restart of a watchman with thousands
+   of receipts does not fetch each one back.
+5. Then measure: a load harness against the compose stack with `n` synthetic chains of
    length `L` and `N` members, recording requests per sweep and sweep duration. The numbers
    above are derived from the code; that harness would replace them with observed ones.

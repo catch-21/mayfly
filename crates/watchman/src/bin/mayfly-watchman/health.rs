@@ -90,6 +90,8 @@ pub struct DeclinedView {
 pub struct SweepView {
     /// Chains engaged.
     pub engaged: Vec<String>,
+    /// Chains taken back from an earlier process, with their receipts.
+    pub resumed: Vec<String>,
     /// Chains renewed.
     pub extended: Vec<String>,
     /// Chains that lapsed.
@@ -98,14 +100,33 @@ pub struct SweepView {
     pub declined: Vec<DeclinedView>,
     /// Receipts written.
     pub receipts: usize,
+    /// Chains whose poll ran out of time; tried again next sweep.
+    pub timed_out: Vec<String>,
+    /// Chains whose poll failed, with the error.
+    pub failed: Vec<FailedView>,
+    /// Customers whose homeserver did not list `/pub/` in time.
+    pub slow_customers: Vec<String>,
+    /// Whether this sweep audited (content hashes) rather than polled by name.
+    pub audited: bool,
+}
+
+/// One chain whose poll failed.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FailedView {
+    /// Which chain.
+    pub chain: String,
+    /// Why.
+    pub error: String,
 }
 
 impl From<&SweepReport> for SweepView {
     fn from(r: &SweepReport) -> Self {
+        let ids = |v: &[pubky_mayfly::hash::ChainId]| v.iter().map(|c| c.to_string()).collect();
         Self {
-            engaged: r.engaged.iter().map(|c| c.to_string()).collect(),
-            extended: r.extended.iter().map(|c| c.to_string()).collect(),
-            lapsed: r.lapsed.iter().map(|c| c.to_string()).collect(),
+            engaged: ids(&r.engaged),
+            resumed: ids(&r.resumed),
+            extended: ids(&r.extended),
+            lapsed: ids(&r.lapsed),
             declined: r
                 .declined
                 .iter()
@@ -116,6 +137,17 @@ impl From<&SweepReport> for SweepView {
                 })
                 .collect(),
             receipts: r.receipts,
+            timed_out: ids(&r.timed_out),
+            failed: r
+                .failed
+                .iter()
+                .map(|(chain, error)| FailedView {
+                    chain: chain.to_string(),
+                    error: error.clone(),
+                })
+                .collect(),
+            slow_customers: r.slow_customers.clone(),
+            audited: r.audited,
         }
     }
 }
@@ -142,6 +174,12 @@ pub struct Snapshot {
     pub last_sweep: Option<SweepView>,
     /// The last failure, if the most recent sweep failed.
     pub last_error: Option<String>,
+    /// Polls made between sweeps because a homeserver reported a folder change.
+    pub event_polls: u64,
+    /// Receipts those polls wrote.
+    pub event_receipts: u64,
+    /// Homeserver event streams open right now.
+    pub streams: usize,
 }
 
 struct Inner {
@@ -153,6 +191,9 @@ struct Inner {
     last_sweep_at: Option<u64>,
     last_sweep: Option<SweepView>,
     last_error: Option<String>,
+    event_polls: u64,
+    event_receipts: u64,
+    streams: usize,
     /// Monotonic time of the last successful sweep, for the health verdict.
     last_ok: Option<Instant>,
     sweep_interval: Duration,
@@ -184,9 +225,41 @@ impl Status {
             last_sweep_at: None,
             last_sweep: None,
             last_error: None,
+            event_polls: 0,
+            event_receipts: 0,
+            streams: 0,
             last_ok: None,
             sweep_interval: Duration::from_secs(sweep_secs.max(1)),
         })))
+    }
+
+    fn watching_of<S: Store + Clone, K: Signer + Clone>(op: &Operator<S, K>) -> Vec<Watching> {
+        op.watching()
+            .map(|(chain, dog)| Watching {
+                chain: chain.to_string(),
+                until: dog.terms().until,
+                receipts: dog.receipts().count(),
+            })
+            .collect()
+    }
+
+    /// Record a poll made because a homeserver reported a change.
+    pub fn record_event_poll<S: Store + Clone, K: Signer + Clone>(
+        &self,
+        op: &Operator<S, K>,
+        receipts: usize,
+    ) {
+        let watching = Self::watching_of(op);
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        inner.watching = watching;
+        inner.event_polls += 1;
+        inner.event_receipts += receipts as u64;
+    }
+
+    /// Record how many event streams are open.
+    pub fn record_streams(&self, streams: usize) {
+        let mut inner = self.0.write().unwrap_or_else(|e| e.into_inner());
+        inner.streams = streams;
     }
 
     /// Record a successful sweep: the report, and what the operator is watching and owed.
@@ -196,14 +269,7 @@ impl Status {
         customers: &[String],
         report: &SweepReport,
     ) {
-        let watching = op
-            .watching()
-            .map(|(chain, dog)| Watching {
-                chain: chain.to_string(),
-                until: dog.terms().until,
-                receipts: dog.receipts().count(),
-            })
-            .collect();
+        let watching = Self::watching_of(op);
         let customers = customers
             .iter()
             .filter_map(|p| {
@@ -254,6 +320,9 @@ impl Status {
             last_sweep_at: inner.last_sweep_at,
             last_sweep: inner.last_sweep.clone(),
             last_error: inner.last_error.clone(),
+            event_polls: inner.event_polls,
+            event_receipts: inner.event_receipts,
+            streams: inner.streams,
         }
     }
 
@@ -323,6 +392,9 @@ mod tests {
         assert!(v["last_sweep_at"].is_null());
         assert!(v["last_sweep"].is_null());
         assert!(v["last_error"].is_null());
+        assert_eq!(v["event_polls"], 0);
+        assert_eq!(v["event_receipts"], 0);
+        assert_eq!(v["streams"], 0);
 
         status.record_error("store: boom");
         let v = serde_json::to_value(status.snapshot()).unwrap();
@@ -351,6 +423,10 @@ mod tests {
                 pubky_mayfly_watchman::Declined::NotNamed,
             )],
             receipts: 3,
+            timed_out: vec![chain.clone()],
+            failed: vec![(chain.clone(), "store: away".into())],
+            slow_customers: vec!["carol".into()],
+            audited: true,
             ..SweepReport::default()
         };
         let v = serde_json::to_value(SweepView::from(&report)).unwrap();
@@ -358,5 +434,9 @@ mod tests {
         assert_eq!(v["declined"][0]["why"], "NotNamed");
         assert_eq!(v["declined"][0]["customer"], "alice");
         assert_eq!(v["receipts"], 3);
+        assert_eq!(v["timed_out"], serde_json::json!([chain.to_string()]));
+        assert_eq!(v["failed"][0]["error"], "store: away");
+        assert_eq!(v["slow_customers"], serde_json::json!(["carol"]));
+        assert_eq!(v["audited"], true);
     }
 }

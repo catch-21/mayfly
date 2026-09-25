@@ -30,8 +30,18 @@ pub trait Store: MaybeSend + MaybeSync {
     /// My pubky (z32); the owner every `put` writes as.
     fn me(&self) -> &str;
 
-    /// Every file under `prefix` (an absolute folder path ending in `/`) in `owner`'s storage.
+    /// Every file under `prefix` (an absolute folder path ending in `/`) in `owner`'s storage,
+    /// with each file's content hash where the store can learn it cheaply enough to tell an
+    /// overwritten mirror from a cached copy (§7).
     async fn list(&self, owner: &str, prefix: &str) -> Result<Vec<Listed>, Error>;
+
+    /// Every file under `prefix`, names only: `content_hash` is `None`. For a reader that
+    /// fetches what it has not seen by name and never compares a listing against a cache —
+    /// the watchman, which receipts the bytes it fetches — this is one request per page of
+    /// the listing instead of one per file. The default is [`Self::list`].
+    async fn list_names(&self, owner: &str, prefix: &str) -> Result<Vec<Listed>, Error> {
+        self.list(owner, prefix).await
+    }
 
     /// Fetch one file; `None` if absent.
     async fn get(&self, owner: &str, path: &str) -> Result<Option<Vec<u8>>, Error>;
@@ -121,6 +131,15 @@ impl Store for MemoryStore {
             }
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(out)
+    }
+
+    /// Names only, as a homeserver listing is: what a test of a names-only reader must see.
+    async fn list_names(&self, owner: &str, prefix: &str) -> Result<Vec<Listed>, Error> {
+        let mut out = self.list(owner, prefix).await?;
+        for l in &mut out {
+            l.content_hash = None;
+        }
         Ok(out)
     }
 

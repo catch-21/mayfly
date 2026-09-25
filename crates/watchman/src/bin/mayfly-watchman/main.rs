@@ -107,6 +107,10 @@ async fn run(config: Config) -> Result<(), Failure> {
         renew_before_secs = config.renew_before_secs,
         poll_ms = config.poll_ms,
         sweep_secs = config.sweep_secs,
+        deadline_secs = config.deadline_secs,
+        concurrency = config.concurrency,
+        audit_every = config.audit_every,
+        events = config.events,
         "watchman signed in"
     );
     for pubky in &config.free {
@@ -126,7 +130,10 @@ async fn run(config: Config) -> Result<(), Failure> {
     .poll_every(config.poll_ms);
     let mut op = Operator::new(store, signer, terms)
         .engage_for(config.engage_secs)
-        .renew_before(config.renew_before_secs);
+        .renew_before(config.renew_before_secs)
+        .deadline(Duration::from_secs(config.deadline_secs))
+        .concurrency(config.concurrency)
+        .audit_every(config.audit_every);
     for pubky in &config.free {
         op.free(pubky.clone());
     }
@@ -144,9 +151,11 @@ async fn run(config: Config) -> Result<(), Failure> {
         None => None,
     };
 
-    Service::new(op, config.customers(), status, config.sweep_secs)
-        .run(shutdown())
-        .await;
+    let mut service = Service::new(op, config.customers(), status, config.sweep_secs);
+    if config.events {
+        service = service.with_events(pubky);
+    }
+    service.run(shutdown()).await;
     info!("stopped");
     Ok(())
 }

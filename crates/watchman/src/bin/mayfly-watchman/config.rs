@@ -179,6 +179,21 @@ pub struct Cli {
     /// Seconds between sweeps of every customer's `/pub/` and every watched chain.
     #[arg(long, env = "MAYFLY_WATCHMAN_SWEEP_SECS", value_name = "SECS")]
     pub sweep_secs: Option<u64>,
+    /// Seconds one chain's poll, one customer's listing or one engagement may take before
+    /// it is left for the next sweep. Default: the sweep interval.
+    #[arg(long, env = "MAYFLY_WATCHMAN_DEADLINE_SECS", value_name = "SECS")]
+    pub deadline_secs: Option<u64>,
+    /// How many chains to poll at once.
+    #[arg(long, env = "MAYFLY_WATCHMAN_CONCURRENCY", value_name = "N")]
+    pub concurrency: Option<usize>,
+    /// Every this many sweeps, list with content hashes to catch a mirror overwritten in
+    /// place; `0` never.
+    #[arg(long, env = "MAYFLY_WATCHMAN_AUDIT_EVERY", value_name = "SWEEPS")]
+    pub audit_every: Option<u32>,
+    /// Follow the parties' homeserver event streams and poll a chain the moment one of its
+    /// folders changes; the sweep stays as the fallback. `true` by default.
+    #[arg(long, env = "MAYFLY_WATCHMAN_EVENTS", value_name = "BOOL")]
+    pub events: Option<bool>,
     /// `receipts` (default) or `mirror`.
     #[arg(long, env = "MAYFLY_WATCHMAN_TIER", value_name = "TIER")]
     pub tier: Option<Tier>,
@@ -215,6 +230,14 @@ pub struct FileConfig {
     pub poll_ms: Option<u64>,
     /// See [`Cli::sweep_secs`].
     pub sweep_secs: Option<u64>,
+    /// See [`Cli::deadline_secs`].
+    pub deadline_secs: Option<u64>,
+    /// See [`Cli::concurrency`].
+    pub concurrency: Option<usize>,
+    /// See [`Cli::audit_every`].
+    pub audit_every: Option<u32>,
+    /// See [`Cli::events`].
+    pub events: Option<bool>,
     /// See [`Cli::tier`].
     pub tier: Option<Tier>,
     /// See [`Cli::health_addr`].
@@ -260,6 +283,14 @@ pub struct Config {
     pub poll_ms: u64,
     /// Seconds between sweeps.
     pub sweep_secs: u64,
+    /// Seconds one poll, listing or engagement may take.
+    pub deadline_secs: u64,
+    /// Chains polled at once.
+    pub concurrency: usize,
+    /// Sweeps between audits; `0` never.
+    pub audit_every: u32,
+    /// Whether to follow homeserver event streams.
+    pub events: bool,
     /// The service tier.
     pub tier: Tier,
     /// Where to serve health and status, if anywhere.
@@ -343,6 +374,22 @@ impl Config {
                 "--renew-before-secs ({renew_before_secs}) must be less than --engage-secs ({engage_secs})"
             ));
         }
+        let deadline_secs = cli
+            .deadline_secs
+            .or(file.deadline_secs)
+            .unwrap_or(sweep_secs);
+        let concurrency = cli
+            .concurrency
+            .or(file.concurrency)
+            .unwrap_or(pubky_mayfly_watchman::DEFAULT_CONCURRENCY);
+        if deadline_secs == 0 || concurrency == 0 {
+            return Err("--deadline-secs and --concurrency must be at least 1".into());
+        }
+        let audit_every = cli
+            .audit_every
+            .or(file.audit_every)
+            .unwrap_or(pubky_mayfly_watchman::DEFAULT_AUDIT_EVERY);
+        let events = cli.events.or(file.events).unwrap_or(true);
 
         Ok(Self {
             network,
@@ -359,6 +406,10 @@ impl Config {
             renew_before_secs,
             poll_ms,
             sweep_secs,
+            deadline_secs,
+            concurrency,
+            audit_every,
+            events,
             tier: cli.tier.or(file.tier).unwrap_or(Tier::Receipts),
             health_addr: cli.health_addr.or(file.health_addr),
         })
@@ -441,6 +492,36 @@ mod tests {
         assert_eq!(config.engage_secs, DEFAULT_ENGAGE_SECS);
         assert_eq!(config.tier, Tier::Receipts);
         assert_eq!(config.customers(), vec![a, b, pubky(3)]);
+        assert_eq!(
+            config.deadline_secs, config.sweep_secs,
+            "a poll may take one sweep"
+        );
+        assert_eq!(
+            config.concurrency,
+            pubky_mayfly_watchman::DEFAULT_CONCURRENCY
+        );
+        assert_eq!(
+            config.audit_every,
+            pubky_mayfly_watchman::DEFAULT_AUDIT_EVERY
+        );
+        assert!(config.events, "events on unless turned off");
+        let quiet = Config::resolve(
+            cli(&[
+                "--homeserver",
+                HS,
+                "--events",
+                "false",
+                "--deadline-secs",
+                "3",
+                "--audit-every",
+                "0",
+            ]),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert!(!quiet.events);
+        assert_eq!(quiet.deadline_secs, 3);
+        assert_eq!(quiet.audit_every, 0);
     }
 
     #[test]
