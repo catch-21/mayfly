@@ -77,10 +77,10 @@ async function twoMembers() {
 }
 
 test("the shipped rules and a pubky list are known before anything is written", () => {
-  assert.deepEqual(shippedRules(), ["list/1"]);
+  assert.deepEqual(shippedRules(), ["list/1", "chess/1"]);
   const registry = new RulesRegistry(shippedRules());
   assert.equal(registry.resolve("list/1"), "list/1");
-  assert.equal(registry.resolve("chess/1"), undefined);
+  assert.equal(registry.resolve("chess/1"), "chess/1");
   const [me, other, third] = [0, 1, 2].map(() => new KeyedSigner(APP).pubky);
   assert.deepEqual(parsePubkys(`${me}\n${other}, ${third}`, { exclude: me }), [other, third]);
   assert.throws(() => parsePubkys(`${other} ${other}`), /listed more than once/);

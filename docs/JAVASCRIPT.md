@@ -37,19 +37,21 @@ npm test          # two members and a reader over an in-memory store, in Node
 `js/browser/README.md` is the guide; `docs/skills/mayfly-app/SKILL.md` says what the client
 does for a page and why.
 
-## The example web app
+## The web apps
 
 ```
-apps/list   the shared shopping list, for its members: sign in with Pubky Ring, create, invite,
-            join, add / edit / tick / untick / remove, archive, close
-apps/view   the chain viewer, for anyone: paste a chain or record link, follow it live or read
-            it finished, every link decoded, every verification failure on the record it belongs to
+apps/list      the shared shopping list, for its members: sign in with Pubky Ring, create, invite,
+               join, add / edit / tick / untick / remove, archive, close
+apps/view      the chain viewer, for anyone: paste a chain or record link, follow it live or read
+               it finished, every link decoded, every verification failure on the record it belongs to
+apps/contract  two parties agreeing a contract: offer, accept, reject, or revise, then close
 ```
 
-Both are Vite + React static sites over the browser client, with a `/testnet/` flavour
+They are Vite + React static sites over the browser client, with a `/testnet/` flavour
 (`npm run build:testnet`) for the local testnet. Each has its own README. They take the SDK
 from `../pubky-sdk/bindings/js/pkg` (run its `npm run build` first), the module from
 `crates/wasm` and the client from `js/browser` (`npm run build` in each) as `file:`
 dependencies until they are published.
 
-The shopping list is the only app in this repository. Further apps are their own projects.
+The shopping list, the viewer, and the contract app live under `apps/`. A further web app
+depends on the browser client and follows the same shape.

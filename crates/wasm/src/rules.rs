@@ -7,6 +7,7 @@ use serde_json::Value;
 use pubky_mayfly::genesis::Genesis;
 use pubky_mayfly::record::{CloseBody, Confirmation, Link};
 use pubky_mayfly::rules::{Nonce, Outcome, PartyIndex, Rules, RulesError, Status};
+use pubky_mayfly_rules::chess::Chess;
 use pubky_mayfly_rules::list::List;
 
 /// Every rules module a client can run.
@@ -14,6 +15,8 @@ use pubky_mayfly_rules::list::List;
 pub enum AnyRules {
     /// `list/1`.
     List(List),
+    /// `chess/1`.
+    Chess(Chess),
     /// Rules supplied by the app as a JavaScript object.
     #[cfg(target_arch = "wasm32")]
     Js(crate::jsrules::JsRules),
@@ -24,12 +27,13 @@ impl AnyRules {
     pub fn by_id(id: &str) -> Option<Self> {
         match id {
             "list/1" => Some(Self::List(List)),
+            "chess/1" => Some(Self::Chess(Chess)),
             _ => None,
         }
     }
 
     /// Every id this package ships.
-    pub const IDS: &'static [&'static str] = &["list/1"];
+    pub const IDS: &'static [&'static str] = &["list/1", "chess/1"];
 }
 
 /// JSON bytes with object keys sorted at every level: the default `canonical_state` for
@@ -88,6 +92,7 @@ impl Rules for AnyRules {
     fn id(&self) -> &'static str {
         match self {
             Self::List(r) => r.id(),
+            Self::Chess(r) => r.id(),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.id(),
         }
@@ -96,6 +101,7 @@ impl Rules for AnyRules {
     fn reference_hash(&self) -> &'static str {
         match self {
             Self::List(r) => r.reference_hash(),
+            Self::Chess(r) => r.reference_hash(),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.reference_hash(),
         }
@@ -109,6 +115,7 @@ impl Rules for AnyRules {
     ) -> Result<Value, RulesError> {
         match self {
             Self::List(r) => conv(r.init(genesis, confirmations, nonces)?),
+            Self::Chess(r) => conv(r.init(genesis, confirmations, nonces)?),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.init(genesis, confirmations, nonces),
         }
@@ -117,6 +124,7 @@ impl Rules for AnyRules {
     fn wants_reveals(&self, genesis: &Genesis) -> bool {
         match self {
             Self::List(r) => r.wants_reveals(genesis),
+            Self::Chess(r) => r.wants_reveals(genesis),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.wants_reveals(genesis),
         }
@@ -125,6 +133,7 @@ impl Rules for AnyRules {
     fn obliged(&self, s: &Value) -> Vec<PartyIndex> {
         match self {
             Self::List(r) => state(s).map(|s| r.obliged(&s)).unwrap_or_default(),
+            Self::Chess(r) => state(s).map(|s| r.obliged(&s)).unwrap_or_default(),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.obliged(s),
         }
@@ -135,6 +144,9 @@ impl Rules for AnyRules {
             Self::List(r) => state(s)
                 .map(|s| r.may_append(&s, party, kind))
                 .unwrap_or(false),
+            Self::Chess(r) => state(s)
+                .map(|s| r.may_append(&s, party, kind))
+                .unwrap_or(false),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.may_append(s, party, kind),
         }
@@ -143,6 +155,7 @@ impl Rules for AnyRules {
     fn apply(&self, s: &Value, link: &Link) -> Result<Value, RulesError> {
         match self {
             Self::List(r) => conv(r.apply(&state(s)?, link)?),
+            Self::Chess(r) => conv(r.apply(&state(s)?, link)?),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.apply(s, link),
         }
@@ -151,6 +164,7 @@ impl Rules for AnyRules {
     fn status(&self, s: &Value) -> Status {
         match self {
             Self::List(r) => state(s).map(|s| r.status(&s)).unwrap_or(Status::Ongoing),
+            Self::Chess(r) => state(s).map(|s| r.status(&s)).unwrap_or(Status::Ongoing),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.status(s),
         }
@@ -159,6 +173,7 @@ impl Rules for AnyRules {
     fn close(&self, s: &Value, close: &CloseBody) -> Result<Outcome, RulesError> {
         match self {
             Self::List(r) => r.close(&state(s)?, close),
+            Self::Chess(r) => r.close(&state(s)?, close),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.close(s, close),
         }
@@ -167,6 +182,7 @@ impl Rules for AnyRules {
     fn canonical_state(&self, s: &Value) -> Vec<u8> {
         match self {
             Self::List(r) => state(s).map(|s| r.canonical_state(&s)).unwrap_or_default(),
+            Self::Chess(r) => state(s).map(|s| r.canonical_state(&s)).unwrap_or_default(),
             #[cfg(target_arch = "wasm32")]
             Self::Js(r) => r.canonical_state(s),
         }

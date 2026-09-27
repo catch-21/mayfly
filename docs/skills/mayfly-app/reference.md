@@ -133,7 +133,8 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
   `RulesModule` is the JavaScript rules shape; `RulesRef = string | RulesModule`.
 - `loadMayfly(wasm?)`, `shippedRules()`, `parseChainUrl(url)` → `ChainRef` (record links
   accepted), `isChainUrl`, `verifyFrom(rules, store, url)`, `decodeRecord(bytes, name, etag?)`,
-  `describeError(e)`, `isTransient(e)` (reads `e.transient`), `errorName(e)`.
+  `describeError(e)`, `isTransient(e)` (reads `e.transient`), `errorName(e)`,
+  `hashBytes(bytes)` (BLAKE3, unpadded base64url, for bytes an app names itself).
 - React (`@synonymdev/mayfly-browser/react`): `useSession(app)`, `useRingSignIn(app,
   onSession)`, `useMyChains(app, party)`, `useCreateChain(party, rules)`,
   `useChainSession(app, party, url, rules, options?)`, `useChainReader(options)`.
@@ -158,9 +159,9 @@ fn canonical_state(&self, state) -> Vec<u8>;        // hashed into every link
 - `new ChainReader(store, (id) => rules | undefined)` → `load(url)` → `Loaded`; caches decoded
   records by content hash across loads.
 - Free functions: `verifyFrom(rules, store, chainUrl)` → `ChainView`; `myChains(store,
-  folder)`; `decodeRecord(bytes, name, etag?)` → `RecordView`; `parseChainUrl` (record links
-  accepted; returns `url`), `chainUrl`, `isPubky`, `designatedProposer`, `rulesIds` (the
-  shipped ids only).
+  folder)`; `decodeRecord(bytes, name, etag?)` → `RecordView`; `hashBytes(bytes)` →
+  unpadded base64url BLAKE3; `parseChainUrl` (record links accepted; returns `url`),
+  `chainUrl`, `isPubky`, `designatedProposer`, `rulesIds` (the shipped ids only).
 - `KeyedSigner(clientId)`: a self-contained signer for Node and tests.
 - Errors are JS `Error`s with `name` = the client error variant, plus `Busy` and
   `InvalidInput`; `transient: true` on the ones that mean "not yet".

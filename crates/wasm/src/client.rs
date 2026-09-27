@@ -83,6 +83,9 @@ struct SpecInput {
     max_body_bytes: Option<u64>,
     #[serde(default)]
     options: Option<Value>,
+    /// Per party, a rules role. Omit for none.
+    #[serde(default)]
+    roles: Vec<Option<String>>,
 }
 
 /// What the readers return between calls.
@@ -172,7 +175,7 @@ impl ChainClient {
     /// Write genesis as `spec.parties[0]` and return the initiator's client (§8.1).
     ///
     /// `rules`: a shipped rules id (`"list/1"`) or a rules object. `spec`: `{ parties, apps?,
-    /// confirmQuorum?, witnesses?, recoveryDelayMs?, maxBodyBytes?, options? }`.
+    /// confirmQuorum?, witnesses?, recoveryDelayMs?, maxBodyBytes?, options?, roles? }`.
     pub async fn create(
         rules: JsValue,
         store: JsValue,
@@ -199,6 +202,7 @@ impl ChainClient {
         if let Some(o) = input.options {
             spec.options = o;
         }
+        spec.roles = input.roles;
         let inner = Inner::create(rules, store, signer, spec)
             .await
             .map_err(js)?;
@@ -644,10 +648,37 @@ pub fn is_pubky(s: String) -> bool {
     pubky_mayfly::keys::parse_z32(&s).is_ok()
 }
 
+/// BLAKE3 of `bytes`, unpadded base64url, the same spelling as a record hash (§6).
+///
+/// For bytes an app names itself (a file kept off the chain, a clause). Record hashes are
+/// already on the view; this does not replace them.
+#[wasm_bindgen(js_name = "hashBytes")]
+pub fn hash_bytes(bytes: &[u8]) -> String {
+    crate::hash_bytes::hash_bytes(bytes)
+}
+
 /// The rules ids this build ships. Other rules are passed as objects.
 #[wasm_bindgen(js_name = "rulesIds")]
 pub fn rules_ids() -> Vec<String> {
     AnyRules::IDS.iter().map(|s| s.to_string()).collect()
+}
+
+/// The board view of a `chess/1` state: FEN, whose turn, the legal UCI moves, and the SAN
+/// played so far. The page uses this to draw moves; it does not decide whether one is legal.
+#[wasm_bindgen(js_name = "chessView")]
+pub fn chess_view(state: JsValue) -> Result<JsValue, JsValue> {
+    let state: pubky_mayfly_rules::chess::State = from_js(state, "chess state")?;
+    let view = pubky_mayfly_rules::chess::chess_view(&state).map_err(|e| input(e.to_string()))?;
+    to_js(&view)
+}
+
+/// PGN for a `chess/1` state. `think` is one entry per move: the witnessed think time in
+/// milliseconds, or `null` when that move is not yet timed.
+#[wasm_bindgen(js_name = "chessPgn")]
+pub fn chess_pgn(state: JsValue, think: JsValue) -> Result<String, JsValue> {
+    let state: pubky_mayfly_rules::chess::State = from_js(state, "chess state")?;
+    let think: Vec<Option<u64>> = from_js(think, "think times")?;
+    pubky_mayfly_rules::chess::pgn(&state, &think).map_err(|e| input(e.to_string()))
 }
 
 /// Whose turn a round `>= 1` at `seq` is, among `parties` (§6.4 rotation) — for a page that

@@ -144,6 +144,51 @@ pub mod stopwatch {
     }
 }
 
+/// One witness's reading of a timestamp or a duration.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TimeReading {
+    /// Witness pubky.
+    pub witness: String,
+    /// Unix milliseconds, or a duration in milliseconds, depending on the field it sits in.
+    pub ms: u64,
+}
+
+/// A time taken from receipts.
+///
+/// `ms` is set when every engaged witness who answered agrees within a polling interval.
+/// One answer is enough to show a time. When the answers disagree, `ms` is absent and
+/// `split` lists each reading. Nobody answering leaves both empty.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Default)]
+pub struct WitnessTime {
+    /// The agreed reading, the earliest when they agree.
+    pub ms: Option<u64>,
+    /// Each witness's reading when they do not agree.
+    pub split: Vec<TimeReading>,
+}
+
+impl WitnessTime {
+    /// Collapse `readings`. `poll_ms` is the widest poll among the witnesses who answered.
+    pub fn agree(mut readings: Vec<TimeReading>, poll_ms: u64) -> Self {
+        if readings.is_empty() {
+            return Self::default();
+        }
+        readings.sort_by(|a, b| a.witness.cmp(&b.witness).then(a.ms.cmp(&b.ms)));
+        let min = readings.iter().map(|r| r.ms).min().expect("non-empty");
+        let max = readings.iter().map(|r| r.ms).max().expect("non-empty");
+        if max - min <= poll_ms {
+            Self {
+                ms: Some(min),
+                split: Vec::new(),
+            }
+        } else {
+            Self {
+                ms: None,
+                split: readings,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +236,30 @@ mod tests {
         // A second receipt under the new key does not move the time.
         receipts.insert(receipt(&new, &record, 5_000)).unwrap();
         assert_eq!(receipts.observed(&record, &new_kid), Some(1_000));
+        let agreed = WitnessTime::agree(
+            vec![TimeReading {
+                witness: "w".into(),
+                ms: 5_000,
+            }],
+            1_000,
+        );
+        assert_eq!(agreed.ms, Some(5_000));
+        assert!(agreed.split.is_empty());
+        let split = WitnessTime::agree(
+            vec![
+                TimeReading {
+                    witness: "a".into(),
+                    ms: 1_000,
+                },
+                TimeReading {
+                    witness: "b".into(),
+                    ms: 9_000,
+                },
+            ],
+            1_000,
+        );
+        assert!(split.ms.is_none());
+        assert_eq!(split.split.len(), 2);
         let engaged = [Engaged {
             pubky: "watchman".into(),
             kid: new_kid.clone(),

@@ -4,10 +4,13 @@ import init, {
   ChainClient,
   ChainReader as WasmReader,
   decodeRecord as decodeRecordWasm,
+  hashBytes as hashBytesWasm,
   isPubky as isPubkyWasm,
   myChains as myChainsWasm,
   parseChainUrl as parseChainUrlWasm,
   rulesIds,
+  chessView as chessViewWasm,
+  chessPgn as chessPgnWasm,
   verifyFrom as verifyFromWasm,
   type InitInput,
 } from "@synonymdev/mayfly";
@@ -72,6 +75,40 @@ export function verifyFrom<S = unknown>(rules: RulesRef, store: Store, chainUrl:
 /** Decode one record file for inspection (§14). */
 export function decodeRecord(bytes: Uint8Array, name: string, etag?: string): RecordView {
   return decodeRecordWasm(bytes, name, etag ?? null) as RecordView;
+}
+
+/**
+ * BLAKE3 of an app's own bytes, unpadded base64url — the payload spelling of a record hash
+ * (§6). Call after `loadMayfly`. Record hashes are already on the view; this is for a file or
+ * a clause the chain only names.
+ */
+export function hashBytes(bytes: Uint8Array): string {
+  return hashBytesWasm(bytes);
+}
+
+/** What a chess board draws from a `chess/1` state. Legal moves come from shakmaty. */
+export interface ChessBoard {
+  fen: string;
+  turn: string;
+  turn_party: number | null;
+  in_check: boolean;
+  legal_uci: string[];
+  result: string | null;
+  san: string[];
+  /** Pieces White has taken, most valuable first. */
+  captured_by_white: string;
+  /** Pieces Black has taken, most valuable first. */
+  captured_by_black: string;
+}
+
+/** The board view of a `chess/1` state. Call after `loadMayfly`. */
+export function chessView(state: unknown): ChessBoard {
+  return chessViewWasm(state) as ChessBoard;
+}
+
+/** PGN, with a `{ m:ss }` comment on each move that has a witnessed think time. */
+export function chessPgn(state: unknown, thinkMs: (number | null)[]): string {
+  return chessPgnWasm(state, thinkMs);
 }
 
 /**

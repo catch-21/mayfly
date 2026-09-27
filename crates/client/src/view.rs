@@ -14,6 +14,7 @@ use serde_json::Value;
 use pubky_mayfly::fold::{self, Status, Verdict};
 use pubky_mayfly::hash::Hash;
 use pubky_mayfly::rules::{PartyIndex, Rules};
+use pubky_mayfly::witness::WitnessTime;
 
 use crate::chain::Action;
 use crate::store::Listed;
@@ -29,6 +30,10 @@ pub struct Arrangement {
     pub witnesses: Vec<String>,
     /// Confirmations a link needs, including the author's.
     pub confirm_quorum: u32,
+    /// Rules roles, in party order. `None` where genesis set none.
+    pub roles: Vec<Option<String>>,
+    /// Genesis options, including `time_control`.
+    pub options: serde_json::Value,
 }
 
 /// A committed link.
@@ -58,6 +63,15 @@ pub struct LinkView {
     pub witnessed: (usize, usize),
     /// True once a successor embedded this QC.
     pub is_final: bool,
+    /// When a watchman saw the proposal. The author's [`Self::ts`] is not this time.
+    pub observed_at: WitnessTime,
+    /// When a watchman saw the quorum-completing confirmation.
+    pub confirmed_at: WitnessTime,
+    /// How long the proposer took after the previous quorum. Absent for genesis, and until
+    /// a receipt arrives.
+    pub think: WitnessTime,
+    /// How long confirmation took after the proposal. Not part of [`Self::think`].
+    pub respond: WitnessTime,
 }
 
 /// A valid candidate at the open seq.
@@ -125,6 +139,8 @@ pub struct OpenSeqView {
     pub candidates: Vec<CandidateView>,
     /// Parties who voted, per round: `(round, parties)`.
     pub voters: Vec<(u32, Vec<PartyIndex>)>,
+    /// When the head's quorum completed, so a page can show time spent on the open move.
+    pub ready_at: WitnessTime,
 }
 
 /// An anomaly, attributed.
@@ -268,6 +284,10 @@ pub fn chain_view<R: Rules>(rules: &R, v: &Verdict, suspects: &[Listed]) -> Chai
                 .collect(),
             witnessed: c.witnessed,
             is_final: c.is_final,
+            observed_at: c.observed_at.clone(),
+            confirmed_at: c.confirmed_at.clone(),
+            think: c.think.clone(),
+            respond: c.respond.clone(),
         })
         .collect();
     let open = v.open.as_ref().map(|o| OpenSeqView {
@@ -287,6 +307,7 @@ pub fn chain_view<R: Rules>(rules: &R, v: &Verdict, suspects: &[Listed]) -> Chai
             })
             .collect(),
         voters: o.voters.iter().map(|(r, ps)| (*r, ps.clone())).collect(),
+        ready_at: o.ready_at.clone(),
     });
     let state = fold::replay_state(rules, v)
         .ok()

@@ -452,6 +452,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "btoi"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b5ab9db53bcda568284df0fd39f6eac24ad6f7ba7ff1168b9e76eba6576b976"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2514,6 +2523,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "nohash-hasher"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3346,6 +3361,7 @@ dependencies = [
  "pubky-mayfly",
  "serde",
  "serde_json",
+ "shakmaty",
 ]
 
 [[package]]
@@ -3381,6 +3397,7 @@ dependencies = [
  "pubky-common",
  "pubky-mayfly",
  "pubky-mayfly-client",
+ "pubky-mayfly-rules",
  "pubky-testnet",
  "serde",
  "serde_json",
@@ -4301,6 +4318,19 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
  "digest 0.11.3",
+]
+
+[[package]]
+name = "shakmaty"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8377322ffda8ac1d6c24af5d4c2cacaf6e059c5581c6082f222364ec759578c"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.13.2",
+ "btoi",
+ "nohash-hasher",
+ "serde",
 ]
 
 [[package]]

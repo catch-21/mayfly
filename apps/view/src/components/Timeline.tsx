@@ -1,7 +1,20 @@
-import type { ChainView, LinkView, OpenSeqView } from "../types";
-import { formatMillis } from "../format";
+import type { ChainView, LinkView, OpenSeqView, WitnessTime } from "../types";
+import { formatDuration, formatMillis } from "../format";
 import { Json } from "./Json";
 import { Short } from "./Short";
+
+function witnessTime(label: string, time: WitnessTime, asDuration: boolean): string {
+  if (time.ms !== null && time.ms !== undefined) {
+    return `${label} ${asDuration ? formatDuration(time.ms) : formatMillis(time.ms)}`;
+  }
+  if (time.split.length) {
+    const parts = time.split.map(
+      (r) => `${r.witness.slice(0, 8)} ${asDuration ? formatDuration(r.ms) : formatMillis(r.ms)}`,
+    );
+    return `${label} split ${parts.join(", ")}`;
+  }
+  return `${label} not yet timed`;
+}
 
 function LinkCard({ link, parties }: { link: LinkView; parties: string[] }) {
   const [m, k] = link.witnessed;
@@ -26,7 +39,11 @@ function LinkCard({ link, parties }: { link: LinkView; parties: string[] }) {
           author {link.author}{" "}
           <Short value={link.author_pubky || parties[link.author] || ""} head={10} tail={6} />
         </span>
-        <span>ts {formatMillis(link.ts)}</span>
+        <span>author's clock {formatMillis(link.ts)}</span>
+        <span>{witnessTime("seen", link.observed_at, false)}</span>
+        <span>{witnessTime("confirmed", link.confirmed_at, false)}</span>
+        <span>{witnessTime("think", link.think, true)}</span>
+        <span>{witnessTime("confirm delay", link.respond, true)}</span>
         <span>
           confirmers{" "}
           {link.confirmers.length ? link.confirmers.map((c) => `#${c}`).join(", ") : "none recorded"}

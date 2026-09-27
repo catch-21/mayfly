@@ -20,6 +20,7 @@ use pubky_mayfly::fold::{AnomalyKind, Status};
 use pubky_mayfly::hash::{ChainId, Hash};
 use pubky_mayfly::record::{CloseReason, Confirmation, Link, Signed};
 use pubky_mayfly::sim::{Storage, Tally};
+use pubky_mayfly::witness::stopwatch;
 use pubky_mayfly::{typ, PROTOCOL_VERSION};
 use pubky_mayfly_client::chain::verify_from;
 use pubky_mayfly_client::layout::Folder;
@@ -158,6 +159,10 @@ async fn world(terms: impl Fn(u64) -> Terms) -> World {
         );
         assert_eq!(v.engaged[0].kid, watchman.signer.kid());
         assert_eq!(v.committed[0].witnessed, (0, 1), "nothing receipted yet");
+        assert!(
+            v.committed[0].observed_at.ms.is_none(),
+            "no receipt, so the link is not yet timed"
+        );
     }
     World {
         clients,
@@ -214,6 +219,12 @@ async fn a_watchman_receipts_the_chain_and_every_link_is_witnessed() {
     sync_all(&mut w.clients).await;
     for c in &w.clients {
         assert_eq!(c.verdict().unwrap().committed[0].witnessed, (1, 1));
+        let genesis = &c.verdict().unwrap().committed[0];
+        assert!(
+            genesis.observed_at.ms.is_some(),
+            "the watchman timed genesis"
+        );
+        assert!(genesis.think.ms.is_none(), "genesis has no previous quorum");
     }
     assert_eq!(
         w.dog.poll().await.unwrap().receipts,
@@ -259,6 +270,31 @@ async fn a_watchman_receipts_the_chain_and_every_link_is_witnessed() {
                 w.dog.observed_at(&q.hash).unwrap() >= w.dog.observed_at(&link.link.hash).unwrap()
             );
         }
+        let ready = prev
+            .qc
+            .iter()
+            .map(|q| w.dog.observed_at(&q.hash).unwrap())
+            .max()
+            .unwrap();
+        let proposal = w.dog.observed_at(&link.link.hash).unwrap();
+        let confirmed = link
+            .qc
+            .iter()
+            .map(|q| w.dog.observed_at(&q.hash).unwrap())
+            .max()
+            .unwrap();
+        assert_eq!(
+            link.think.ms,
+            Some(stopwatch::think(proposal, ready)),
+            "think is the proposal minus the previous quorum"
+        );
+        assert_eq!(
+            link.respond.ms,
+            Some(stopwatch::respond(confirmed, proposal)),
+            "a slow confirmation is respond, not think"
+        );
+        assert!(link.respond.ms.unwrap() >= 60_000);
+        assert!(link.think.split.is_empty());
     }
 
     // Every party mirrored the engagement and the receipts (§7), so the timeline is readable
@@ -276,8 +312,8 @@ async fn a_watchman_receipts_the_chain_and_every_link_is_witnessed() {
         assert!(mirrored.iter().any(|l| l.path.ends_with("/engage.jws")));
         assert_eq!(
             mirrored.len(),
-            1 + 3 * 2,
-            "the engagement, plus a receipt per QC member of each of three committed links"
+            1 + 3 * 3,
+            "the engagement, plus the proposal and each QC confirmation of three links"
         );
     }
     {

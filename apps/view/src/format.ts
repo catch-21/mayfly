@@ -27,6 +27,15 @@ export function formatSeconds(s: number): string {
   return formatMillis(s * 1000);
 }
 
+/** A duration in milliseconds as `m:ss`. */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "\u2014";
+  const seconds = Math.floor(ms / 1000);
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 /** A clock time for "last updated". */
 export function formatClock(d: Date): string {
   return d.toLocaleTimeString(undefined, { hour12: false });

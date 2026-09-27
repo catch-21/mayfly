@@ -1,6 +1,6 @@
 ---
 name: mayfly-app
-description: Build an application on Mayfly, the verifiable hashchain protocol among a small fixed set of parties on Pubky (crates pubky-mayfly, pubky-mayfly-rules, pubky-mayfly-client, pubky-mayfly-watchman). Use when writing a Mayfly app as its own project, implementing a Rules module, driving ChainClient, engaging a watchman, or testing chains over MemoryStore or a pubky-testnet. The only example app in this repository is the shared shopping list.
+description: Build an application on Mayfly, the verifiable hashchain protocol among a small fixed set of parties on Pubky (crates pubky-mayfly, pubky-mayfly-rules, pubky-mayfly-client, pubky-mayfly-watchman). Use when writing a Mayfly app, implementing a Rules module, driving ChainClient, engaging a watchman, or testing chains over MemoryStore or a pubky-testnet. The apps in this repository are the shared shopping list, its viewer, the two-party contract, and chess.
 ---
 
 # Building on Mayfly
@@ -20,7 +20,7 @@ below refer to it. Read the section before touching what it governs.
 | `pubky-mayfly-watchman` | `Watchman` (one chain) and `Operator` (many chains, customers, credit). Run it as a service; apps only *name* a watchman in genesis. |
 | `pubky-mayfly-wasm` (`crates/wasm`) | The client, verifier and views for JavaScript, over a `Store` and `Signer` the page supplies; `js/pubky-glue.js` builds both from the SDK. Rules are a shipped id or an object the app writes in JavaScript. |
 | `@synonymdev/mayfly-browser` (`js/browser`) | **The client a web app drives.** Sign-in, the `act()` loop, decisions, held proposals, live updates, the home index, a read-only reader; React hooks under `/react`. Start here for a browser app. |
-| `apps/list`, `apps/view` | The only example app: the shared shopping list for its members (`src/useList.ts` names the list's verbs over `useChainSession`; `src/ListPage.tsx` renders the phases and decisions) and the read-only chain viewer for anyone (over `useChainReader`). `docs/LIST-APP-TEST-PLAN.md` is the manual test plan they were built against. Read them; do not add the next app beside them. |
+| `apps/list`, `apps/view`, `apps/contract`, `apps/chess` | The shopping list (`src/useList.ts` names the list's verbs over `useChainSession`; `src/ListPage.tsx` renders the phases and decisions), the read-only chain viewer (`useChainReader`), the two-party contract (`contract/1` is a JavaScript `RulesModule`), and chess (`chess/1` is shakmaty, shipped in the wasm module). `docs/LIST-APP-TEST-PLAN.md` and `docs/CONTRACT-APP-TEST-PLAN.md` are the manual test plans. Read them; a further app follows the same shape under `apps/`. |
 | `mayfly-demo` (`crates/demo`) | A narrated Rust walkthrough on a testnet: `src/main.rs` drives `ChainClient` and a watchman through the happy and sad paths; `src/explorer.rs` renders a chain for a bystander. Read it for the protocol, not for app structure. |
 
 Full API cheat‑sheet: [reference.md](reference.md).
@@ -111,9 +111,9 @@ Test rules two ways: unit tests on `apply` alone, and a flow over `MemoryStore` 
 
 ## Building a web app
 
-The shopping list is the only app in this repository. The next app is its own project that
-depends on `@synonymdev/mayfly-browser` (and, for Rust rules, on a wasm build). Read
-`apps/list` and `apps/view` for the shape. Do not add it under `apps/`.
+The shopping list, the viewer, the contract app, and chess are the apps in this repository. A further
+web app depends on `@synonymdev/mayfly-browser` (and, for Rust rules, on a wasm build) and
+lives under `apps/`. Read `apps/list`, `apps/view`, `apps/contract`, and `apps/chess` for the shape.
 
 A page does not write the loop above: `ChainSession` runs it. The page names the app and the
 network, signs the person in, opens the chain, and renders the state the session publishes:

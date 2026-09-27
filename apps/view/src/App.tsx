@@ -72,6 +72,13 @@ function HowTo() {
           link. Receipts never gate a link; they are evidence of when it existed (§11).
         </li>
         <li>
+          <em>seen</em> is when a watchman receipted the proposal. <em>think</em> is how long the
+          author took after the previous quorum, and <em>confirm delay</em> is how long the other
+          parties took to confirm — that delay is not part of the author's time. <em>author's
+          clock</em> is the timestamp the signer wrote, which is not the watchman's time. A link
+          with no receipt yet says it is not yet timed.
+        </li>
+        <li>
           Every file is checked on its own: signature under the key it names, bytes against the
           homeserver ETag, bytes against the hash in its file name (§7).
         </li>

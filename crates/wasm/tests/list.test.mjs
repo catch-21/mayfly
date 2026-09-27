@@ -18,6 +18,7 @@ import init, {
   designatedProposer,
   isPubky,
   myChains,
+  chessView,
 } from "../pkg/mayfly.js";
 import { Shared, memoryStore } from "./memory-store.mjs";
 
@@ -64,7 +65,7 @@ function lower(a, b) {
 }
 
 test("a shared list runs on act() alone, through the wasm module", async () => {
-  assert.deepEqual(rulesIds(), ["list/1"]);
+  assert.deepEqual(rulesIds(), ["list/1", "chess/1"]);
 
   const shared = new Shared();
   const clock = new Clock(1_757_779_812_000);
@@ -410,7 +411,7 @@ test("errors are JS Errors named after the variant", async () => {
   const store = memoryStore(signer.pubky, shared);
   const parties = [signer.pubky, other.pubky];
   await assert.rejects(
-    ChainClient.create("chess/1", store, signer, { parties }),
+    ChainClient.create("nope/1", store, signer, { parties }),
     (e) => e.name === "InvalidInput" && /unknown rules/.test(e.message),
   );
   await assert.rejects(
@@ -429,4 +430,33 @@ test("errors are JS Errors named after the variant", async () => {
   await assert.rejects(c.confirm("not a hash"), (e) => e.name === "InvalidInput");
   assert.throws(() => ChainClient.openUrl("list/1", store, { pubky: "x" }, c.inviteUrl()), (e) => e.name === "InvalidInput");
   assert.throws(() => designatedProposer(c.chain(), 1, 0, 3), (e) => e.name === "InvalidInput");
+});
+
+test("a legal chess move is confirmed only after the rules accept it", async () => {
+  const shared = new Shared();
+  const signers = ["chess.example", "chess.example"].map((app) => new KeyedSigner(app));
+  const stores = signers.map((s) => memoryStore(s.pubky, shared));
+  const pubkies = signers.map((s) => s.pubky);
+  const alice = await ChainClient.create("chess/1", stores[0], signers[0], {
+    parties: pubkies,
+    apps: ["chess.example", "chess.example"],
+    roles: ["white", "black"],
+  });
+  const bob = ChainClient.openUrl("chess/1", stores[1], signers[1], alice.inviteUrl());
+  await bob.sync();
+  await bob.join();
+  await alice.act();
+  await bob.act();
+  assert.equal(alice.view().committed.length, 1);
+  await assert.rejects(alice.proposeBody({ kind: "move", uci: "e2e5" }), (e) => e.name === "Rules");
+  await alice.proposeBody({ kind: "move", uci: "e2e4" });
+  const acts = await bob.act();
+  assert.ok(acts.some((a) => a.kind === "confirmed"), JSON.stringify(acts));
+  await alice.act();
+  await bob.act();
+  assert.deepEqual(bob.state().moves, ["e2e4"]);
+  const board = chessView(bob.state());
+  assert.equal(board.turn, "black");
+  assert.ok(board.legal_uci.includes("e7e5"));
+  assert.ok(!board.legal_uci.includes("e2e5"));
 });

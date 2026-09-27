@@ -35,17 +35,18 @@ README. To watch a chain being built, run [the demo](docs/DEMO.md).
 | Path                     | What it is                                       |
 | ------------------------ | ------------------------------------------------ |
 | `crates/core`            | Records, the verifier, rounds and votes. No I/O. |
-| `crates/rules`           | `list/1`, the shopping-list rules.               |
+| `crates/rules`           | `list/1` and `chess/1`.                          |
 | `crates/client`          | `ChainClient`: what an application drives.       |
 | `crates/watchman`        | The watchman, and the `mayfly-watchman` service. |
 | `crates/demo`            | A narrated shopping list on a local testnet.     |
 | `crates/wasm`            | The client and verifier for JavaScript.          |
 | `js/browser`             | The browser client a web app drives.             |
-| `apps/list`, `apps/view` | The example web app and its viewer.              |
+| `apps/list`, `apps/view` | The shopping list and its viewer.                |
+| `apps/contract`          | Two parties agreeing a contract.                 |
+| `apps/chess`             | A two-player game, timed by a watchman.          |
 
 
-Further applications are their own projects. A web app depends on `js/browser`; a Rust app on
-the crates. They are not added under `apps/`.
+A web app depends on `js/browser` and lives under `apps/`. A Rust app depends on the crates.
 
 ## Further reading
 
@@ -67,7 +68,7 @@ application or a rules module, for people and agents, with the API cheat-sheet
 `[reference.md](docs/skills/mayfly-app/reference.md)` beside it. `AGENTS.md` points agents
 there on entry.
 
-The shopping list is the only example application in this repository. The shape of an app is
+The shopping list, the viewer, the contract app, and the chess app are the applications in this repository. The shape of an app is
 `crates/client/tests/list.rs`: join from an invite URL, call `act()` on every change, and put
 `Action::Decision`s to the user. In the browser that loop is `@synonymdev/mayfly-browser`
 (`js/browser`); a web app supplies its rules and its screens and nothing else.

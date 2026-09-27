@@ -12,6 +12,7 @@
 //!   `confirmAbandoned`, `proposeReveal`, `mirror`, `waitForChange`, `state`, `view`, …
 //! - `verifyFrom(rules, store, chainUrl)` — the chain view as a bystander sees it.
 //! - `decodeRecord(bytes, name, etag?)` — one file for the evidence panel.
+//! - `hashBytes(bytes)` — BLAKE3 of an app's own bytes, in the payload spelling (§6).
 //! - `parseChainUrl`, `chainUrl`, `rulesIds`.
 //! - `KeyedSigner` — a self-contained signer for Node apps and tests.
 //!
@@ -25,6 +26,7 @@
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod hash_bytes;
 pub mod rules;
 
 #[cfg(target_arch = "wasm32")]
@@ -50,9 +52,11 @@ mod tests {
 
     #[test]
     fn rules_are_found_by_id() {
-        let r = AnyRules::by_id("list/1").expect("list/1 ships");
-        assert_eq!(r.id(), "list/1");
-        assert!(AnyRules::by_id("chess/1").is_none());
-        assert_eq!(AnyRules::IDS, &["list/1"]);
+        let list = AnyRules::by_id("list/1").expect("list/1 ships");
+        assert_eq!(list.id(), "list/1");
+        let chess = AnyRules::by_id("chess/1").expect("chess/1 ships");
+        assert_eq!(chess.id(), "chess/1");
+        assert!(AnyRules::by_id("document/1").is_none());
+        assert_eq!(AnyRules::IDS, &["list/1", "chess/1"]);
     }
 }

@@ -250,6 +250,11 @@ export class ChainSession<S = unknown, B extends Body = Body> {
     return this.answer(question(hash, false), (c) => c.confirmAbandoned(hash));
   }
 
+  /** Reveal the nonce this seat committed to, so a game can draw colours (§6.6). */
+  proposeReveal(): Promise<void> {
+    return this.run((c) => c.proposeReveal());
+  }
+
   /** Sync and act now. */
   refresh(): Promise<void> {
     return this.act();

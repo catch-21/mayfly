@@ -16,7 +16,7 @@ A web app does not usually drive this module directly: `@synonymdev/mayfly-brows
 ## Use
 
 ```js
-import init, { ChainClient, verifyFrom, decodeRecord } from "@synonymdev/mayfly";
+import init, { ChainClient, verifyFrom, decodeRecord, hashBytes } from "@synonymdev/mayfly";
 import { storeFromPubky, signerFromSession } from "@synonymdev/mayfly/js/pubky-glue.js";
 await init();
 
@@ -47,6 +47,7 @@ console.log(bob.state().items, bob.view().status.summary);
 // Anyone: verify from the URL alone, and decode one file for the evidence panel.
 const seen = await verifyFrom("list/1", storeFromPubky(pubky), invite);
 const record = decodeRecord(bytes, path, etag);   // typ, payload, signature_ok, hash_matches_*
+const named = hashBytes(new TextEncoder().encode("hello")); // BLAKE3, unpadded base64url (§6)
 ```
 
 The store and signer shapes are in `js/pubky-glue.d.ts`; `js/pubky-glue.js` builds them from an

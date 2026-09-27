@@ -38,7 +38,9 @@ use crate::record::{
 use crate::rules::{state_hash, Outcome, PartyIndex, Rules, Status as RulesStatus};
 use crate::typ;
 use crate::vote::{designated, effective_quorum, RoundVotes, Vote};
-use crate::witness::{adjudicate, Engaged, Receipts, Verdict as TimeVerdict};
+use crate::witness::{
+    adjudicate, Engaged, Receipts, TimeReading, Verdict as TimeVerdict, WitnessTime,
+};
 use crate::PROTOCOL_FOLDER;
 
 /// Everything the caller could find. Bytes only; the fold decodes and verifies.
@@ -111,6 +113,14 @@ pub struct Committed {
     /// *Witnessed m/k*: how many of the engaged witnesses receipted every confirmation of its
     /// QC (and so its QC-completing one), over how many were engaged.
     pub witnessed: (usize, usize),
+    /// When a watchman saw this proposal. Empty until a receipt arrives.
+    pub observed_at: WitnessTime,
+    /// When a watchman saw the quorum-completing confirmation.
+    pub confirmed_at: WitnessTime,
+    /// How long the proposer took, from the previous quorum. Absent for genesis.
+    pub think: WitnessTime,
+    /// How long the confirmers took after the proposal. Never added to [`Self::think`].
+    pub respond: WitnessTime,
 }
 
 /// A `recover` the fold accepted, reported as such (§6.7).
@@ -217,6 +227,8 @@ pub struct OpenView {
     pub candidates: Vec<OpenCandidate>,
     /// Parties who have voted, per round.
     pub voters: BTreeMap<u32, Vec<PartyIndex>>,
+    /// When the head's quorum completed, so a page can show time on the open move.
+    pub ready_at: WitnessTime,
 }
 
 /// The fold's output.
@@ -1736,6 +1748,10 @@ impl<'a, R: Rules> Fold<'a, R> {
                 qc: Vec::new(),
                 is_final: false,
                 witnessed: (0, 0),
+                observed_at: WitnessTime::default(),
+                confirmed_at: WitnessTime::default(),
+                think: WitnessTime::default(),
+                respond: WitnessTime::default(),
             };
             let Some(qc) = self.embedded_qc(&s.payload.confirms, &as_committed, &keys_now) else {
                 continue;
@@ -1919,6 +1935,10 @@ impl<'a, R: Rules> Fold<'a, R> {
             qc: qc.clone(),
             is_final: false,
             witnessed,
+            observed_at: WitnessTime::default(),
+            confirmed_at: WitnessTime::default(),
+            think: WitnessTime::default(),
+            respond: WitnessTime::default(),
         });
 
         // 3f.
@@ -2229,6 +2249,10 @@ impl<'a, R: Rules> Fold<'a, R> {
                         qc,
                         is_final: true,
                         witnessed,
+                        observed_at: WitnessTime::default(),
+                        confirmed_at: WitnessTime::default(),
+                        think: WitnessTime::default(),
+                        respond: WitnessTime::default(),
                     });
                     self.status = Status::Abandoned {
                         subjects: close.subjects.clone(),
@@ -2358,6 +2382,7 @@ impl<'a, R: Rules> Fold<'a, R> {
                 .iter()
                 .map(|(r, v)| (*r, v.voters().into_iter().collect()))
                 .collect(),
+            ready_at: WitnessTime::default(),
         });
         if seq > 0 && view.rounds.values().all(|v| v.by_party.is_empty()) {
             self.status = Status::Ongoing;
@@ -2505,7 +2530,86 @@ impl<'a, R: Rules> Fold<'a, R> {
 
     // ── Step 5 ──────────────────────────────────────────────────────────────────────────────
 
-    fn finish(self) -> Verdict {
+    /// Fill [`WitnessTime`] on every committed link and on the open seq, from the receipts
+    /// the fold holds. A witness who did not see a record contributes nothing. One witness
+    /// is enough to show a time; a spread wider than the widest poll among those who
+    /// answered is a split, not an average.
+    fn stamp_clocks(&mut self) {
+        let snaps: Vec<(Hash, Vec<Hash>)> = self
+            .committed
+            .iter()
+            .map(|c| (c.link.hash, c.qc.iter().map(|q| q.hash).collect()))
+            .collect();
+        let times: Vec<_> = snaps
+            .iter()
+            .enumerate()
+            .map(|(i, (proposal, confirms))| {
+                let prev = i.checked_sub(1).map(|p| snaps[p].1.as_slice());
+                self.link_times(*proposal, confirms, prev)
+            })
+            .collect();
+        for (c, (observed, confirmed, think, respond)) in self.committed.iter_mut().zip(times) {
+            c.observed_at = observed;
+            c.confirmed_at = confirmed;
+            c.think = think;
+            c.respond = respond;
+        }
+        let ready = self.head_ready();
+        if let Some(open) = self.open.as_mut() {
+            open.ready_at = ready;
+        }
+    }
+
+    fn link_times(
+        &self,
+        proposal: Hash,
+        confirms: &[Hash],
+        prev: Option<&[Hash]>,
+    ) -> (WitnessTime, WitnessTime, WitnessTime, WitnessTime) {
+        let observed = self.agree(|w| self.receipts.observed(&proposal, &w.kid));
+        let confirmed = self.agree(|w| latest_seen(&self.receipts, &w.kid, confirms));
+        let think = match prev {
+            Some(prev) => self.agree(|w| {
+                let ready = latest_seen(&self.receipts, &w.kid, prev)?;
+                let at = self.receipts.observed(&proposal, &w.kid)?;
+                Some(crate::witness::stopwatch::think(at, ready))
+            }),
+            None => WitnessTime::default(),
+        };
+        let respond = self.agree(|w| {
+            let at = self.receipts.observed(&proposal, &w.kid)?;
+            let done = latest_seen(&self.receipts, &w.kid, confirms)?;
+            Some(crate::witness::stopwatch::respond(done, at))
+        });
+        (observed, confirmed, think, respond)
+    }
+
+    /// `ready` of the head: the latest QC confirmation, per witness who saw every one.
+    fn head_ready(&self) -> WitnessTime {
+        let Some(head) = self.committed.last() else {
+            return WitnessTime::default();
+        };
+        let qc: Vec<Hash> = head.qc.iter().map(|c| c.hash).collect();
+        self.agree(|w| latest_seen(&self.receipts, &w.kid, &qc))
+    }
+
+    fn agree(&self, each: impl Fn(&Engaged) -> Option<u64>) -> WitnessTime {
+        let mut readings = Vec::new();
+        let mut poll = 0;
+        for w in &self.engaged {
+            if let Some(ms) = each(w) {
+                poll = poll.max(w.poll_ms);
+                readings.push(TimeReading {
+                    witness: w.pubky.clone(),
+                    ms,
+                });
+            }
+        }
+        WitnessTime::agree(readings, poll)
+    }
+
+    fn finish(mut self) -> Verdict {
+        self.stamp_clocks();
         Verdict {
             chain: self.chain,
             committed: self.committed,
@@ -2517,6 +2621,19 @@ impl<'a, R: Rules> Fold<'a, R> {
             anomalies: self.anomalies,
         }
     }
+}
+
+/// The latest `observed_at` among `hashes`, or `None` if the witness missed any of them.
+fn latest_seen(receipts: &Receipts, kid: &str, hashes: &[Hash]) -> Option<u64> {
+    if hashes.is_empty() {
+        return None;
+    }
+    let mut latest = None;
+    for hash in hashes {
+        let t = receipts.observed(hash, kid)?;
+        latest = Some(latest.map_or(t, |l: u64| l.max(t)));
+    }
+    latest
 }
 
 /// What step 3h concluded.

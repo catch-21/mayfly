@@ -16,6 +16,7 @@ export type {
   SeatView,
   StatusView,
   SuspectView,
+  WitnessTime,
 } from "@synonymdev/mayfly-browser";
 
 /** The `list/1` state, for the checklist rendering. */

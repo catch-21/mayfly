@@ -1,11 +1,10 @@
 //! Rules implementations (§10).
 //!
-//! `list/1` first: any member may append; kinds `add`, `edit`, `tick`, `untick`, `remove`,
-//! `archive`. Trivial by design — it exercises multi-party confirmation, competing proposals
-//! (and so rounds) and the explorer with no rules complexity. Further apps live in their own
-//! projects and bring their own rules.
+//! `list/1` is the shared list. `chess/1` is a two-player game: shakmaty decides whether a
+//! move is legal, and the rules never read a clock.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod chess;
 pub mod list;

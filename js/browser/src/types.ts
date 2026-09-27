@@ -4,6 +4,17 @@
 
 export type PartyIndex = number;
 
+export interface TimeReading {
+  witness: string;
+  ms: number;
+}
+
+/** A watchman time. `ms` is set when the witnesses who answered agree; `split` lists each reading when they do not. */
+export interface WitnessTime {
+  ms: number | null;
+  split: TimeReading[];
+}
+
 export interface LinkView {
   seq: number;
   round: number;
@@ -17,6 +28,14 @@ export interface LinkView {
   confirmers: PartyIndex[];
   witnessed: [number, number];
   is_final: boolean;
+  /** When a watchman saw the proposal. `ts` is the author's own clock, not this. */
+  observed_at: WitnessTime;
+  /** When a watchman saw the quorum-completing confirmation. */
+  confirmed_at: WitnessTime;
+  /** How long the proposer took after the previous quorum. */
+  think: WitnessTime;
+  /** How long confirmation took after the proposal. */
+  respond: WitnessTime;
 }
 
 export interface CandidateView {
@@ -35,6 +54,8 @@ export interface OpenSeqView {
   dead: boolean;
   candidates: CandidateView[];
   voters: [number, PartyIndex[]][];
+  /** When the head's quorum completed. Time on the open move is `now − ready_at.ms`. */
+  ready_at: WitnessTime;
 }
 
 export interface StatusView {
@@ -80,6 +101,10 @@ export interface Arrangement {
   parties: string[];
   witnesses: string[];
   confirm_quorum: number;
+  /** Rules roles in party order, or null where genesis set none. */
+  roles: (string | null)[];
+  /** Genesis options, including `time_control`. */
+  options: Record<string, unknown>;
 }
 
 export interface ChainView<S = unknown> {
@@ -240,4 +265,6 @@ export interface ChainSpec {
   maxBodyBytes?: number;
   /** Rules options; `time_control: { think_ms, respond_ms }` is read by the protocol. */
   options?: Record<string, unknown>;
+  /** Per party, a rules role (`white`, `black`). Omit for a random colour. */
+  roles?: (string | null)[];
 }

@@ -32,6 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 
 [dev-dependencies]
+pubky-mayfly-rules = { path = "../rules" }
 pubky-testnet.workspace = true
 tempfile = "3"
 # Tests implement `Store` over a wrapper that can stall one homeserver.

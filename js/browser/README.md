@@ -69,7 +69,8 @@ Rules the wasm module does not ship are a plain object (`RulesModule`): `id`,
 `obliged`, `status`, `canonicalState`. Every method is synchronous and pure; throw to refuse.
 Pass the object wherever a rules id is accepted, and add it to a `RulesRegistry` so the
 reader can verify chains that name it. `crates/wasm/tests/list.test.mjs` runs a `tally/1`
-written this way.
+written this way. `hashBytes` is the protocol's BLAKE3 (unpadded base64url) for bytes the
+app names itself, such as a file kept off the chain.
 
 ## What `ChainState` tells a page
 

@@ -174,6 +174,7 @@ export type SessionHandle<S, B extends Body> = ChainState<S, B> &
     | "proposeClose"
     | "proposeAbandoned"
     | "confirmAbandoned"
+    | "proposeReveal"
     | "refresh"
   >;
 
@@ -226,6 +227,7 @@ export function useChainSession<S = unknown, B extends Body = Body>(
       proposeClose: (r: "agreed" | "finished") => session.proposeClose(r),
       proposeAbandoned: (s: number[]) => session.proposeAbandoned(s),
       confirmAbandoned: (h: string) => session.confirmAbandoned(h),
+      proposeReveal: () => session.proposeReveal(),
       refresh: () => session.refresh(),
     }),
     [state, session],

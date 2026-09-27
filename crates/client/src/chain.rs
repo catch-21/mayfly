@@ -101,6 +101,8 @@ pub struct GenesisSpec {
     pub max_body_bytes: u64,
     /// Rules options.
     pub options: Value,
+    /// Per party, a rules role (`white`, `black`). Missing entries are no role.
+    pub roles: Vec<Option<String>>,
 }
 
 impl GenesisSpec {
@@ -114,6 +116,7 @@ impl GenesisSpec {
             recovery_delay_ms: genesis::MIN_RECOVERY_DELAY_MS,
             max_body_bytes: 65_536,
             options: json!({}),
+            roles: Vec::new(),
         }
     }
 
@@ -319,7 +322,7 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
                 .map(|(i, p)| genesis::Party {
                     pubky: p.clone(),
                     kid: (i == 0).then(|| signer.kid()),
-                    role: None,
+                    role: spec.roles.get(i).cloned().flatten(),
                     path: if i == 0 {
                         Some(signer.path())
                     } else {
@@ -341,11 +344,12 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             |id| (id == rules.id()).then(|| rules.reference_hash().to_string()),
             u64::MAX,
         )?;
-        let state = rules
-            .init(&g, &[], &[])
-            .ok()
-            .map(|s| state_hash(&rules, &s))
-            .unwrap_or_else(|| Hash::of(b"genesis"));
+        let state = if rules.wants_reveals(&g) {
+            Hash::of(b"genesis")
+        } else {
+            let s = rules.init(&g, &[], &[]).map_err(|e| Error::Rules(e.0))?;
+            state_hash(&rules, &s)
+        };
         let ts = now_ms();
         let link = Link {
             v: PROTOCOL_VERSION,
@@ -474,6 +478,8 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
             parties: g.parties.iter().map(|p| p.pubky.clone()).collect(),
             witnesses: g.witnesses.iter().map(|w| w.pubky.clone()).collect(),
             confirm_quorum: g.confirm_quorum,
+            roles: g.parties.iter().map(|p| p.role.clone()).collect(),
+            options: g.options.clone(),
         })
     }
 
@@ -1666,7 +1672,9 @@ impl<R: Rules, S: Store, K: Signer> ChainClient<R, S, K> {
                     let Ok(record) = Hash::parse(&r.payload.record) else {
                         continue;
                     };
-                    if members.contains(&record) {
+                    // The proposal as well as the quorum: think time is the gap between them,
+                    // and both receipts have to survive on a party's copy (§7).
+                    if record == c.link.hash || members.contains(&record) {
                         writes.push((
                             folder.mirrored_receipt(&r.payload.kid, seq, &r.hash),
                             bytes.clone(),
