@@ -188,6 +188,14 @@ fn run_strategy(max_k: usize, max_passes: u32) -> impl Strategy<Value = Run> {
 
 /// Build and play a run. Returns the simulator and the rounds each seq took.
 fn play(run: &Run) -> Result<(Sim<Tally>, Vec<u32>), TestCaseError> {
+    play_with(run, |_| {})
+}
+
+/// [`play`], with a hook to set behaviours on the simulator before genesis.
+fn play_with(
+    run: &Run,
+    configure: impl FnOnce(&mut Sim<Tally>),
+) -> Result<(Sim<Tally>, Vec<u32>), TestCaseError> {
     let mut sim = Sim::new(
         Tally,
         run.n,
@@ -195,6 +203,7 @@ fn play(run: &Run) -> Result<(Sim<Tally>, Vec<u32>), TestCaseError> {
         &["chess.example", "notes.example"],
         run.q,
     );
+    configure(&mut sim);
     sim.bootstrap()
         .map_err(|e| TestCaseError::fail(e.to_string()))?;
     let mut rounds = Vec::new();
@@ -209,6 +218,65 @@ fn play(run: &Run) -> Result<(Sim<Tally>, Vec<u32>), TestCaseError> {
 
 fn keep(mask: u64, i: usize) -> bool {
     mask & (1 << (i % 64)) != 0
+}
+
+/// A Fisher–Yates shuffle driven by a xorshift generator, so a permutation is reproducible
+/// from one `u64` proptest drew. Every order two homeserver listings could return is one of
+/// these.
+fn shuffle<T>(items: &mut [T], mut seed: u64) {
+    for i in (1..items.len()).rev() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let j = (seed % (i as u64 + 1)) as usize;
+        items.swap(i, j);
+    }
+}
+
+/// Everything a verdict says, in a form two verdicts can be compared by. Sets the fold holds
+/// in vectors — a QC's confirmations, the anomaly list, an anomaly's evidence — are sorted;
+/// everything else must match as the fold produced it.
+fn snapshot(v: &pubky_mayfly::fold::Verdict) -> Vec<String> {
+    let mut out = vec![
+        format!("chain {:?}", v.chain),
+        format!("status {:?}", v.status),
+        format!("open {:?}", v.open),
+        format!("seats {:?}", v.seats),
+        format!("engaged {:?}", v.engaged),
+        format!("recoveries {:?}", v.recoveries),
+    ];
+    for c in &v.committed {
+        let mut qc: Vec<Hash> = c.qc.iter().map(|q| q.hash).collect();
+        qc.sort();
+        out.push(format!(
+            "committed seq={} link={:?} author={} final={} witnessed={:?} qc={:?} observed={:?} confirmed={:?} think={:?} respond={:?}",
+            c.link.payload.seq,
+            c.link.hash,
+            c.author,
+            c.is_final,
+            c.witnessed,
+            qc,
+            c.observed_at,
+            c.confirmed_at,
+            c.think,
+            c.respond
+        ));
+    }
+    let mut anomalies: Vec<String> = v
+        .anomalies
+        .iter()
+        .map(|a| {
+            let mut evidence = a.evidence.clone();
+            evidence.sort();
+            format!(
+                "anomaly against={:?} seq={:?} kind={:?} evidence={:?}",
+                a.against, a.seq, a.kind, evidence
+            )
+        })
+        .collect();
+    anomalies.sort();
+    out.extend(anomalies);
+    out
 }
 
 fn config() -> Config {
@@ -310,6 +378,327 @@ proptest! {
         for c in &v.committed {
             prop_assert_ne!(c.link.hash, mutated_hash);
             prop_assert!(c.qc.iter().all(|q| q.hash != mutated_hash));
+        }
+    }
+
+    /// §9.2: inputs arrive "from any source and in any order". Two verifiers listing the same
+    /// folders may receive the files in different orders, so the verdict — committed links,
+    /// status, open seq, seats, witnesses, recoveries, and the set of anomalies — must not
+    /// depend on the order of any input bucket.
+    #[test]
+    fn the_verdict_does_not_depend_on_input_order(
+        run in run_strategy(2, 2),
+        seeds in proptest::collection::vec(any::<u64>(), 5),
+    ) {
+        let (sim, _) = play(&run)?;
+        let all = sim.inputs_all();
+        let reference = snapshot(&verify(&Tally, &all, &config()).map_err(|e| TestCaseError::fail(e.to_string()))?);
+
+        let mut shuffled = all.clone();
+        shuffle(&mut shuffled.links, seeds[0]);
+        shuffle(&mut shuffled.confirms, seeds[1]);
+        shuffle(&mut shuffled.rejects, seeds[2]);
+        shuffle(&mut shuffled.engagements, seeds[3]);
+        shuffle(&mut shuffled.receipts, seeds[4]);
+        let v = verify(&Tally, &shuffled, &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&snapshot(&v), &reference);
+
+        // Reversal is the permutation a first-wins or last-wins bug is most likely to feel.
+        let mut reversed = all;
+        reversed.links.reverse();
+        reversed.confirms.reverse();
+        reversed.rejects.reverse();
+        reversed.engagements.reverse();
+        reversed.receipts.reverse();
+        let v = verify(&Tally, &reversed, &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&snapshot(&v), &reference);
+    }
+}
+
+// ─── Adversarial runs ─────────────────────────────────────────────────────────────────────────
+
+/// One forged record written into a party's folder after an honest run. Each names a real
+/// link, so it lands on a real `(seq, round)`; the flags move it off that spot or give it a
+/// wrong `state`, so the fold's late-vote, unjustified-round, equivocation, divergence and
+/// hostile-source branches are all reachable.
+#[derive(Debug, Clone, Copy)]
+enum Forgery {
+    /// A confirmation by `party`'s current key for the `link`-th committed or proposed link.
+    Confirm {
+        party: usize,
+        link: usize,
+        /// Confirm in the link's own round, or with no round at all.
+        with_round: bool,
+        /// Repeat the link's `state`, or write a wrong one.
+        right_state: bool,
+    },
+    /// A reject by `party`'s current key at the link's `(seq, round)`.
+    Reject {
+        party: usize,
+        link: usize,
+        /// Name the link, or vote for nothing.
+        named: bool,
+        /// Bump the round by one, so the reject lands where nobody proposed.
+        next_round: bool,
+    },
+    /// A reject signed by a key nobody has ever established, in `party`'s folder.
+    Stranger { party: usize, link: usize },
+    /// Every party confirms one link in its round: the `link`-th uncommitted competitor at the
+    /// head seq when there is one, which builds a second QC there; otherwise the `link`-th
+    /// link of all, which in history is a late vote.
+    Rally { link: usize },
+}
+
+fn forgery_strategy() -> impl Strategy<Value = Forgery> {
+    prop_oneof![
+        (0usize..4, 0usize..16, any::<bool>(), any::<bool>()).prop_map(
+            |(party, link, with_round, right_state)| Forgery::Confirm {
+                party,
+                link,
+                with_round,
+                right_state,
+            }
+        ),
+        (0usize..4, 0usize..16, any::<bool>(), any::<bool>()).prop_map(
+            |(party, link, named, next_round)| Forgery::Reject {
+                party,
+                link,
+                named,
+                next_round,
+            }
+        ),
+        (0usize..4, 0usize..16).prop_map(|(party, link)| Forgery::Stranger { party, link }),
+        (0usize..16).prop_map(|link| Forgery::Rally { link }),
+    ]
+}
+
+/// Every distinct link in the inputs, in the order found, with the fields a forgery needs.
+fn links_in(inputs: &Inputs) -> Vec<(Hash, u64, u32, String)> {
+    let mut seen = BTreeSet::new();
+    inputs
+        .links
+        .iter()
+        .filter_map(|b| pubky_mayfly::fold::decode_link(b.clone()).ok())
+        .filter(|l| seen.insert(l.hash))
+        .map(|l| {
+            (
+                l.hash,
+                l.payload.seq,
+                l.payload.round,
+                l.payload.state.clone(),
+            )
+        })
+        .collect()
+}
+
+/// Write every forgery into the simulator's storage.
+fn forge(sim: &mut Sim<Tally>, forgeries: &[Forgery]) {
+    let links = links_in(&sim.inputs_all());
+    let n = sim.n();
+    for f in forgeries {
+        match *f {
+            Forgery::Confirm {
+                party,
+                link,
+                with_round,
+                right_state,
+            } => {
+                let (hash, seq, round, state) = &links[link % links.len()];
+                let state = if right_state { state.as_str() } else { "wrong" };
+                sim.forge_confirmation(party % n, *seq, with_round.then_some(*round), *hash, state);
+            }
+            Forgery::Reject {
+                party,
+                link,
+                named,
+                next_round,
+            } => {
+                let (hash, seq, round, _) = links[link % links.len()];
+                let signer = sim.parties[party % n].client.clone();
+                let round = if next_round { round + 1 } else { round };
+                sim.forge_reject(party % n, &signer, seq, round, named.then_some(hash));
+            }
+            Forgery::Stranger { party, link } => {
+                let (hash, seq, round, _) = links[link % links.len()];
+                let stranger = pubky_common::crypto::Keypair::random();
+                sim.forge_reject(party % n, &stranger, seq, round, Some(hash));
+            }
+            Forgery::Rally { link } => {
+                let committed = sim.committed_hashes();
+                let head_seq = committed.len() as u64 - 1;
+                let competitors: Vec<_> = links
+                    .iter()
+                    .filter(|(h, seq, _, _)| *seq == head_seq && !committed.contains(h))
+                    .cloned()
+                    .collect();
+                let pool = if competitors.is_empty() {
+                    &links
+                } else {
+                    &competitors
+                };
+                let (hash, seq, round, state) = pool[link % pool.len()].clone();
+                for p in 0..n {
+                    sim.forge_confirmation(p, seq, Some(round), hash, &state);
+                }
+            }
+        }
+    }
+}
+
+/// The hashes of every link the verdict holds final, seq 0 upward.
+fn final_prefix(v: &pubky_mayfly::fold::Verdict) -> Vec<Hash> {
+    v.committed
+        .iter()
+        .take_while(|c| c.is_final)
+        .map(|c| c.link.hash)
+        .collect()
+}
+
+/// Drop every record whose index does not survive `mask`, across the buckets a hostile or
+/// forgetful folder could lose. Engagements stay: they are how a witness is known at all.
+fn thin(inputs: &Inputs, mask: u64) -> Inputs {
+    let mut out = inputs.clone();
+    let filter = |bucket: &mut Vec<Vec<u8>>, offset: usize| {
+        *bucket = bucket
+            .drain(..)
+            .enumerate()
+            .filter(|(i, _)| keep(mask, *i + offset))
+            .map(|(_, b)| b)
+            .collect();
+    };
+    filter(&mut out.links, 0);
+    filter(&mut out.confirms, 17);
+    filter(&mut out.rejects, 31);
+    filter(&mut out.receipts, 47);
+    out
+}
+
+fn witness_behaviour_strategy() -> impl Strategy<Value = WitnessBehaviour> {
+    prop_oneof![
+        Just(WitnessBehaviour::Honest),
+        Just(WitnessBehaviour::Dark),
+        (0usize..4).prop_map(WitnessBehaviour::Selective),
+        (-3i64..=3, 0i64..DAY_MS)
+            .prop_map(|(days, ms)| WitnessBehaviour::Skewed(days * DAY_MS + ms)),
+        Just(WitnessBehaviour::DeletesReceipts),
+    ]
+}
+
+const DAY_MS: i64 = 86_400_000;
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 48, .. ProptestConfig::default() })]
+
+    /// §6.4 / §9.2 step 3d: forged votes never rewrite history. After an honest run, parties
+    /// write confirmations and rejects they never cast — late, in the wrong round, with the
+    /// wrong `state`, for nothing, or under a key nobody established. The fold either carries
+    /// on, with every link that was final still committed at its seq and the chain still
+    /// open, or stops with `CollectiveEquivocation`, the one error two QCs at one seq may
+    /// raise. Either way it never panics, and the answer does not depend on input order.
+    #[test]
+    fn forged_votes_never_rewrite_history(
+        run in run_strategy(2, 2),
+        forgeries in proptest::collection::vec(forgery_strategy(), 1..=6),
+        seeds in proptest::collection::vec(any::<u64>(), 5),
+    ) {
+        let (mut sim, _) = play(&run)?;
+        let honest = verify(&Tally, &sim.inputs_all(), &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let history = final_prefix(&honest);
+
+        forge(&mut sim, &forgeries);
+        let attacked = sim.inputs_all();
+        let mut shuffled = attacked.clone();
+        shuffle(&mut shuffled.links, seeds[0]);
+        shuffle(&mut shuffled.confirms, seeds[1]);
+        shuffle(&mut shuffled.rejects, seeds[2]);
+        shuffle(&mut shuffled.engagements, seeds[3]);
+        shuffle(&mut shuffled.receipts, seeds[4]);
+
+        match (verify(&Tally, &attacked, &config()), verify(&Tally, &shuffled, &config())) {
+            (Ok(v), Ok(w)) => {
+                prop_assert!(v.committed_hashes().len() >= history.len(), "{:?}", forgeries);
+                prop_assert_eq!(&v.committed_hashes()[..history.len()], &history[..], "{:?}", forgeries);
+                prop_assert!(!v.is_final(), "no close was ever proposed: {:?}", v.status);
+                prop_assert_eq!(&snapshot(&v), &snapshot(&w));
+            }
+            (Err(Error::CollectiveEquivocation { seq: a, .. }), Err(Error::CollectiveEquivocation { seq: b, .. })) => {
+                prop_assert_eq!(a, b);
+                prop_assert!(a as usize >= history.len(), "collective equivocation inside history at seq {}: {:?}", a, forgeries);
+            }
+            (a, b) => prop_assert!(false, "{:?} / {:?} for {:?}", a, b, forgeries),
+        }
+    }
+
+    /// §11.2: a witness that is dark, selective, skewed, or deletes its receipts changes
+    /// nothing the parties decided. `committed[]` and the status match the simulator, the
+    /// only anomalies are witness anomalies, and *witnessed m/k* never counts a witness who
+    /// did not receipt.
+    #[test]
+    fn misbehaving_witnesses_change_nothing_but_witnessed_counts(
+        run in run_strategy(3, 1),
+        behaviours in proptest::collection::vec(witness_behaviour_strategy(), 3),
+        seeds in proptest::collection::vec(any::<u64>(), 5),
+    ) {
+        let (sim, _) = play_with(&run, |sim| {
+            for (w, b) in sim.witnesses.iter_mut().zip(&behaviours) {
+                w.behaviour = *b;
+            }
+        })?;
+        let all = sim.inputs_all();
+        let v = verify(&Tally, &all, &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(v.committed_hashes(), sim.committed_hashes());
+        prop_assert_eq!(&v.status, &Status::Ongoing);
+        prop_assert!(
+            v.anomalies.iter().all(|a| matches!(a.kind, AnomalyKind::Witness(_))),
+            "{:?} under {:?}", v.anomalies, behaviours
+        );
+        let dark = sim.witnesses.iter().filter(|w| w.behaviour == WitnessBehaviour::Dark).count();
+        for c in &v.committed {
+            prop_assert_eq!(c.witnessed.1, run.k);
+            prop_assert!(c.witnessed.0 + dark <= run.k, "seq {}: {:?}", c.link.payload.seq, c.witnessed);
+        }
+
+        let mut shuffled = all;
+        shuffle(&mut shuffled.links, seeds[0]);
+        shuffle(&mut shuffled.confirms, seeds[1]);
+        shuffle(&mut shuffled.rejects, seeds[2]);
+        shuffle(&mut shuffled.engagements, seeds[3]);
+        shuffle(&mut shuffled.receipts, seeds[4]);
+        let w = verify(&Tally, &shuffled, &config()).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        prop_assert_eq!(&snapshot(&w), &snapshot(&v));
+    }
+
+    /// §9.1 / §9.2: two verifiers who found different subsets of the files — some lost, some
+    /// forged — never disagree about history. Each either verifies or stops with a documented
+    /// error; where both verify, every seq both hold final carries the same link, and neither
+    /// calls the chain closed.
+    #[test]
+    fn verifiers_on_different_files_agree_on_history(
+        run in run_strategy(2, 2),
+        forgeries in proptest::collection::vec(forgery_strategy(), 0..=4),
+        mask_a in any::<u64>(),
+        mask_b in any::<u64>(),
+    ) {
+        let (mut sim, _) = play(&run)?;
+        forge(&mut sim, &forgeries);
+        let all = sim.inputs_all();
+        let mut verdicts = Vec::new();
+        for mask in [mask_a, mask_b] {
+            match verify(&Tally, &thin(&all, mask), &config()) {
+                Ok(v) => {
+                    prop_assert!(!v.is_final(), "{:?}", v.status);
+                    verdicts.push(v);
+                }
+                Err(Error::CollectiveEquivocation { .. }) | Err(Error::NoChain(_)) => {}
+                Err(e) => prop_assert!(false, "{} for mask {:#x}, {:?}", e, mask, forgeries),
+            }
+        }
+        if let [a, b] = verdicts.as_slice() {
+            for (x, y) in a.committed.iter().zip(&b.committed) {
+                if x.is_final && y.is_final {
+                    prop_assert_eq!(x.link.hash, y.link.hash, "seq {}", x.link.payload.seq);
+                }
+            }
         }
     }
 }
