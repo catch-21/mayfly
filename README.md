@@ -50,6 +50,7 @@ A web app depends on `js/browser` and lives under `apps/`. A Rust app depends on
 
 ## Further reading
 
+- [FAQ](docs/FAQ.md) — short answers for people new to Mayfly.
 - [Principles](docs/PRINCIPLES.md) — the Mayfly way.
 - [Why every record is a JWS](docs/JWS.md) — a record proves its signer without the homeserver.
 - [Development](docs/DEVELOPMENT.md) — the wasm target, clippy, and tests against a homeserver.
