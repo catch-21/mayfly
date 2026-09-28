@@ -67,9 +67,15 @@ jobs:
         run: npm run build && npm test
         working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly/crates/wasm
       # The apps depend on the SDK's JS package by path; build it once (wasm-pack via npx).
+      # bundle_npm writes the package but does not install its runtime dependency.
+      # Node loads pkg/index.cjs, which requires fetch-cookie from that directory.
+      # A later npm install in an app does not put that module where this require looks.
       - name: build the SDK's JS package
         run: npx --yes --package wasm-pack -c 'cargo run --bin bundle_npm'
         working-directory: ${{ runner.temp }}/pubky-homeserver/pubky-sdk/bindings/js
+      - name: install the SDK package runtime dependency
+        run: npm install --omit=dev
+        working-directory: ${{ runner.temp }}/pubky-homeserver/pubky-sdk/bindings/js/pkg
       # The browser client sits between the wasm module and the apps; its tests run the loop
       # over a memory store in Node.
       - name: browser client
@@ -81,3 +87,6 @@ jobs:
       - name: viewer app
         run: npm install && npm run typecheck && npm run build && npm run build:testnet
         working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly/apps/view
+      - name: chess app
+        run: npm install && npm run typecheck && npm run build && npm run build:testnet
+        working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly/apps/chess
