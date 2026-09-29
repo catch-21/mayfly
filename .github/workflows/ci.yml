@@ -87,6 +87,9 @@ jobs:
       - name: viewer app
         run: npm install && npm run typecheck && npm run build && npm run build:testnet
         working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly/apps/view
+      - name: contract app
+        run: npm install && npm run typecheck && npm test && npm run build && npm run build:testnet
+        working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly/apps/contract
       - name: chess app
         run: npm install && npm run typecheck && npm run build && npm run build:testnet
         working-directory: ${{ runner.temp }}/pubky-homeserver/mayfly/apps/chess
