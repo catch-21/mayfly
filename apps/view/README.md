@@ -70,9 +70,10 @@ no server, no environment at run time.
 ## How it reads a chain
 
 `src/mayfly.ts` builds a `MayflyApp` with a read-only store and a `RulesRegistry` of the
-rules this build ships (`list/1`). An app with its own rules adds the `RulesModule` to that
-registry; a chain whose rules are not in it is still listed and decoded, and the page says
-the chain cannot be verified here.
+rules this build can run: `list/1` and `chess/1`, shipped in the wasm module, and `contract/1`
+from the contract app. A chain whose rules are not in the registry is still listed. The page
+shows the parties, the witnesses genesis names, and each link's body and signature check,
+and says that this is not a verified chain.
 
 `parseChainUrl` cuts a record link back to the chain folder, and that URL is what
 `useChainReader` follows. The reader walks the folders, decodes each `.jws`, and verifies

@@ -7,6 +7,7 @@ import { formatClock } from "./format";
 import { Anomalies } from "./components/Anomalies";
 import { Files, fileKey } from "./components/Files";
 import { Header } from "./components/Header";
+import { Outline } from "./components/Outline";
 import { RecordPanel } from "./components/RecordPanel";
 import { RulesState } from "./components/RulesState";
 import { Timeline } from "./components/Timeline";
@@ -215,16 +216,11 @@ export function App() {
 
       {parseError ? <div className="error">{parseError}</div> : null}
       {chain.error ? <div className="error">{chain.error}</div> : null}
-      {loaded?.view_error ? <div className="error">{loaded.view_error}</div> : null}
-      {loaded && loaded.rules && !loaded.rules_known ? (
-        <div className="notice">
-          Rules <code>{loaded.rules}</code> are not in this build, so the chain cannot be
-          verified here. The files the initiator's folder lists are still shown below, decoded.
-        </div>
-      ) : null}
+      {loaded?.view_error && loaded.rules_known ? <div className="error">{loaded.view_error}</div> : null}
       {!loaded && !chain.error ? <p className="dim">Fetching the chain…</p> : null}
 
       {view ? <Header view={view} rules={loaded?.rules ?? null} /> : null}
+      {!view && loaded ? <Outline loaded={loaded} /> : null}
       {view ? <Timeline view={view} /> : null}
       {view ? <RulesState state={view.state} rules={view.rules ?? loaded?.rules ?? null} /> : null}
       {view && loaded ? <Anomalies view={view} files={loaded.files} onSelect={setSelected} /> : null}

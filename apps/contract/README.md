@@ -32,4 +32,5 @@ the loop, decisions, held proposals, and the home index are the client's.
 | `VITE_TESTNET` | `true` for the local testnet | mainnet relays |
 | `VITE_CLIENT_ID` | The app's client id; records live under `/pub/<client id>/mayfly/` | `contract.mayfly.example` |
 
-A chain with these rules is read in this app. The list viewer only ships `list/1`.
+A chain with these rules is read in this app. The viewer registers `contract/1` as well, so
+the same link verifies there.

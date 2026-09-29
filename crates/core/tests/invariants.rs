@@ -290,7 +290,7 @@ proptest! {
     /// with any subset of receipts, and with any rejects deleted, yields the same `committed[]`
     /// (as hashes) and the same status as folding with everything — and both agree with the
     /// simulator's own model.
-    #[test]
+#[test]
     fn commitment_is_independent_of_receipts_and_death_evidence(run in run_strategy(2, 2)) {
         let (sim, _) = play(&run)?;
         let all = sim.inputs_all();
@@ -327,7 +327,7 @@ proptest! {
 
     /// §6.4: honest parties converge within two rounds at every seq, and an honest run
     /// produces no anomaly.
-    #[test]
+#[test]
     fn honest_parties_converge_within_two_rounds(run in run_strategy(1, 0)) {
         let (sim, rounds) = play(&run)?;
         prop_assert!(rounds.iter().all(|r| *r <= 2), "rounds {:?}", rounds);
@@ -343,7 +343,7 @@ proptest! {
 
     /// §6: any single byte mutation anywhere fails verification of that record, and — because
     /// every committed link and QC is mirrored (§7) — never changes what is committed.
-    #[test]
+#[test]
     fn any_byte_mutation_fails(run in run_strategy(1, 1), which in any::<u32>(), at in any::<u32>(), xor in 1u8..=255) {
         let (sim, _) = play(&run)?;
         let all = sim.inputs_all();
@@ -385,7 +385,7 @@ proptest! {
     /// folders may receive the files in different orders, so the verdict — committed links,
     /// status, open seq, seats, witnesses, recoveries, and the set of anomalies — must not
     /// depend on the order of any input bucket.
-    #[test]
+#[test]
     fn the_verdict_does_not_depend_on_input_order(
         run in run_strategy(2, 2),
         seeds in proptest::collection::vec(any::<u64>(), 5),
@@ -595,7 +595,7 @@ proptest! {
     /// on, with every link that was final still committed at its seq and the chain still
     /// open, or stops with `CollectiveEquivocation`, the one error two QCs at one seq may
     /// raise. Either way it never panics, and the answer does not depend on input order.
-    #[test]
+#[test]
     fn forged_votes_never_rewrite_history(
         run in run_strategy(2, 2),
         forgeries in proptest::collection::vec(forgery_strategy(), 1..=6),
@@ -633,7 +633,7 @@ proptest! {
     /// nothing the parties decided. `committed[]` and the status match the simulator, the
     /// only anomalies are witness anomalies, and *witnessed m/k* never counts a witness who
     /// did not receipt.
-    #[test]
+#[test]
     fn misbehaving_witnesses_change_nothing_but_witnessed_counts(
         run in run_strategy(3, 1),
         behaviours in proptest::collection::vec(witness_behaviour_strategy(), 3),
@@ -672,7 +672,7 @@ proptest! {
     /// forged — never disagree about history. Each either verifies or stops with a documented
     /// error; where both verify, every seq both hold final carries the same link, and neither
     /// calls the chain closed.
-    #[test]
+#[test]
     fn verifiers_on_different_files_agree_on_history(
         run in run_strategy(2, 2),
         forgeries in proptest::collection::vec(forgery_strategy(), 0..=4),

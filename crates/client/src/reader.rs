@@ -192,9 +192,32 @@ impl Reader {
             );
         }
 
+        // Party paths named in genesis, owned so the file list can grow afterwards.
+        let hints = genesis.map(hinted_parties).unwrap_or_default();
+
         // Every seat's declared paths and every engaged witness's folder, deduplicated
-        // against the initiator folder already listed.
+        // against the initiator folder already listed. Without rules there is no fold, so
+        // the paths genesis hints at are listed instead: they are how the other parties are
+        // found before anyone verifies (§9.1).
         let mut folders = vec![initiator];
+        if view.is_none() {
+            let mut seen: std::collections::BTreeSet<(String, String)> =
+                [(owner.clone(), chain_dir.as_str().to_string())].into();
+            for (pubky, path) in hints {
+                let prefix = Folder::from_path(&path).chain(&chain).as_str().to_string();
+                if seen.insert((pubky.clone(), prefix.clone())) {
+                    let mut seat = ReadFolder {
+                        role: FolderRole::Seat,
+                        owner: pubky,
+                        prefix,
+                        error: None,
+                    };
+                    let walked = self.walk(store, &mut seat).await;
+                    files.extend(walked);
+                    folders.push(seat);
+                }
+            }
+        }
         if let Some(v) = &view {
             let mut more: Vec<ReadFolder> = Vec::new();
             let mut seen: std::collections::BTreeSet<(String, String)> =
@@ -310,6 +333,29 @@ impl Reader {
             }
         }
     }
+}
+
+/// Party folders named in a genesis body. Hints only: a party's own confirmation is what
+/// authorises the path, and this is used when the fold has not run.
+fn hinted_parties(genesis: &ReadFile) -> Vec<(String, String)> {
+    let Some(body) = genesis.record.as_ref().and_then(|r| r.payload.get("body")) else {
+        return Vec::new();
+    };
+    let Some(parties) = body.get("parties").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    parties
+        .iter()
+        .filter_map(|p| {
+            let pubky = p.get("pubky")?.as_str()?.to_string();
+            let path = p.get("path")?.as_str()?.to_string();
+            if pubky.is_empty() || path.is_empty() {
+                None
+            } else {
+                Some((pubky, path))
+            }
+        })
+        .collect()
 }
 
 /// Decode the genesis link's rules id from bytes, for callers that hold the file already.
